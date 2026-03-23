@@ -3,12 +3,11 @@ package Mail::Message::Abuse;
 use strict;
 use warnings;
 
-our $VERSION = '2.00';
+our $VERSION = '0.01';
 
 =head1 NAME
 
-Mail::Message::Abuse - Analyse spam email to identify originating hosts,
-hosted URLs, and suspicious domains, similar to SpamCop
+Mail::Message::Abuse - Analyse spam email to identify originating hosts, hosted URLs, and suspicious domains
 
 =head1 SYNOPSIS
 
@@ -35,7 +34,7 @@ hosted URLs, and suspicious domains, similar to SpamCop
 =head1 DESCRIPTION
 
 C<Mail::Message::Abuse> examines the raw source of a spam/phishing e-mail
-and answers the questions SpamCop and manual abuse investigators ask:
+and answers the questions manual abuse investigators ask:
 
 =over 4
 
@@ -109,38 +108,38 @@ BEGIN { $HAS_HTML_LINKEXTOR = eval { require HTML::LinkExtor; 1 } }
 # -----------------------------------------------------------------------
 
 my @PRIVATE_RANGES = (
-    qr/^127\./,
-    qr/^10\./,
-    qr/^192\.168\./,
-    qr/^172\.(?:1[6-9]|2\d|3[01])\./,
-    qr/^169\.254\./,
-    qr/^::1$/,
-    qr/^fc/i,
-    qr/^fd/i,
+	qr/^127\./,
+	qr/^10\./,
+	qr/^192\.168\./,
+	qr/^172\.(?:1[6-9]|2\d|3[01])\./,
+	qr/^169\.254\./,
+	qr/^::1$/,
+	qr/^fc/i,
+	qr/^fd/i,
 );
 
 my @RECEIVED_IP_RE = (
-    qr/\[\s*([\d.]+)\s*\]/,
-    qr/\(\s*[\w.-]*\s*\[?\s*([\d.]+)\s*\]?\s*\)/,
-    qr/from\s+[\w.-]+\s+([\d.]+)/,
-    qr/([\d]{1,3}\.[\d]{1,3}\.[\d]{1,3}\.[\d]{1,3})/,
+	qr/\[\s*([\d.]+)\s*\]/,
+	qr/\(\s*[\w.-]*\s*\[?\s*([\d.]+)\s*\]?\s*\)/,
+	qr/from\s+[\w.-]+\s+([\d.]+)/,
+	qr/([\d]{1,3}\.[\d]{1,3}\.[\d]{1,3}\.[\d]{1,3})/,
 );
 
 # Domains we never bother reporting on - they are the infrastructure,
 # not the criminal.
 my %TRUSTED_DOMAINS = map { $_ => 1 } qw(
-    gmail.com googlemail.com yahoo.com outlook.com hotmail.com
-    google.com microsoft.com apple.com amazon.com
+	gmail.com googlemail.com yahoo.com outlook.com hotmail.com
+	google.com microsoft.com apple.com amazon.com
 );
 
 # Known URL shortener / redirect domains — real destination is hidden
 my %URL_SHORTENERS = map { $_ => 1 } qw(
-    bit.ly      bitly.com   tinyurl.com  t.co        ow.ly
-    goo.gl      is.gd       buff.ly      ift.tt       dlvr.it
-    short.link  rebrand.ly  tiny.cc      cutt.ly      rb.gy
-    shorturl.at bl.ink      smarturl.it  yourls.org   clicky.me
-    snip.ly     adf.ly      bc.vc        lnkd.in      fb.me
-    youtu.be
+	bit.ly      bitly.com   tinyurl.com  t.co        ow.ly
+	goo.gl      is.gd       buff.ly      ift.tt       dlvr.it
+	short.link  rebrand.ly  tiny.cc      cutt.ly      rb.gy
+	shorturl.at bl.ink      smarturl.it  yourls.org   clicky.me
+	snip.ly     adf.ly      bc.vc        lnkd.in      fb.me
+	youtu.be
 );
 
 # Well-known providers: use their specific abuse address / report URL
@@ -217,7 +216,8 @@ my %PROVIDER_ABUSE = (
 =cut
 
 sub new {
-    my ($class, %opts) = @_;
+	my ($class, %opts) = @_;
+
     return bless {
         timeout        => $opts{timeout}        || 10,
         trusted_relays => $opts{trusted_relays} || [],
@@ -303,9 +303,10 @@ Returns a list of hashrefs for every HTTP/HTTPS URL in the body:
 =cut
 
 sub embedded_urls {
-    my ($self) = @_;
-    $self->{_urls} //= $self->_extract_and_resolve_urls();
-    return @{ $self->{_urls} };
+	my ($self) = @_;
+
+	$self->{_urls} //= $self->_extract_and_resolve_urls();
+	return @{ $self->{_urls} };
 }
 
 # -----------------------------------------------------------------------
