@@ -1617,8 +1617,8 @@ sub _parse_date_to_epoch {
 }
 
 sub _debug {
-    my ($self, $msg) = @_;
-    print STDERR "[Mail::Message::Abuse] $msg\n" if $self->{verbose};
+	my ($self, $msg) = @_;
+	print STDERR "[Mail::Message::Abuse] $msg\n" if $self->{verbose};
 }
 
 1;
