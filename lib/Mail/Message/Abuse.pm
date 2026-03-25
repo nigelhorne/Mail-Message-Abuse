@@ -3,6 +3,24 @@ package Mail::Message::Abuse;
 use strict;
 use warnings;
 
+# -----------------------------------------------------------------------
+# Core dependencies (always available)
+# -----------------------------------------------------------------------
+use Socket          qw( inet_aton inet_ntoa );
+use IO::Socket::INET;
+use MIME::QuotedPrint qw( decode_qp );
+use MIME::Base64      qw( decode_base64 );
+
+# Optional - gracefully degraded
+my $HAS_NET_DNS;
+BEGIN { $HAS_NET_DNS = eval { require Net::DNS; 1 } }
+
+my $HAS_LWP;
+BEGIN { $HAS_LWP = eval { require LWP::UserAgent; 1 } }
+
+my $HAS_HTML_LINKEXTOR;
+BEGIN { $HAS_HTML_LINKEXTOR = eval { require HTML::LinkExtor; 1 } }
+
 our $VERSION = '2.00';
 
 =head1 NAME
@@ -84,24 +102,6 @@ unique domain it gathers:
 All are available from CPAN.
 
 =cut
-
-# -----------------------------------------------------------------------
-# Core dependencies (always available)
-# -----------------------------------------------------------------------
-use Socket          qw( inet_aton inet_ntoa );
-use IO::Socket::INET;
-use MIME::QuotedPrint qw( decode_qp );
-use MIME::Base64      qw( decode_base64 );
-
-# Optional - gracefully degraded
-my $HAS_NET_DNS;
-BEGIN { $HAS_NET_DNS = eval { require Net::DNS; 1 } }
-
-my $HAS_LWP;
-BEGIN { $HAS_LWP = eval { require LWP::UserAgent; 1 } }
-
-my $HAS_HTML_LINKEXTOR;
-BEGIN { $HAS_HTML_LINKEXTOR = eval { require HTML::LinkExtor; 1 } }
 
 # -----------------------------------------------------------------------
 # Constants
