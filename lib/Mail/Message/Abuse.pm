@@ -108,14 +108,15 @@ BEGIN { $HAS_HTML_LINKEXTOR = eval { require HTML::LinkExtor; 1 } }
 # -----------------------------------------------------------------------
 
 my @PRIVATE_RANGES = (
-    qr/^127\./,
-    qr/^10\./,
-    qr/^192\.168\./,
-    qr/^172\.(?:1[6-9]|2\d|3[01])\./,
-    qr/^169\.254\./,
-    qr/^::1$/,
-    qr/^fc/i,
-    qr/^fd/i,
+	qr/^0\.0\.0\.0$/,
+	qr/^127\./,
+	qr/^10\./,
+	qr/^192\.168\./,
+	qr/^172\.(?:1[6-9]|2\d|3[01])\./,
+	qr/^169\.254\./,
+	qr/^::1$/,
+	qr/^fc/i,
+	qr/^fd/i,
 );
 
 my @RECEIVED_IP_RE = (
@@ -216,9 +217,10 @@ my %PROVIDER_ABUSE = (
 =cut
 
 sub new {
-    my ($class, %opts) = @_;
+	my ($class, %opts) = @_;
+
     return bless {
-        timeout        => $opts{timeout}        || 10,
+        timeout        => $opts{timeout}        // 10,
         trusted_relays => $opts{trusted_relays} || [],
         verbose        => $opts{verbose}        || 0,
         _raw           => '',
@@ -280,9 +282,10 @@ Returns a hashref:
 =cut
 
 sub originating_ip {
-    my ($self) = @_;
-    $self->{_origin} //= $self->_find_origin();
-    return $self->{_origin};
+	my $self = $_[0];
+
+	$self->{_origin} //= $self->_find_origin();
+	return $self->{_origin};
 }
 
 # -----------------------------------------------------------------------
@@ -1583,11 +1586,11 @@ sub _enrich_ip {
 }
 
 sub _header_value {
-    my ($self, $name) = @_;
-    for my $h (@{ $self->{_headers} }) {
-        return $h->{value} if $h->{name} eq lc($name);
-    }
-    return undef;
+	my ($self, $name) = @_;
+	for my $h (@{ $self->{_headers} }) {
+		return $h->{value} if $h->{name} eq lc($name);
+	}
+	return undef;
 }
 
 sub _ip_in_cidr {
