@@ -7,6 +7,8 @@ MANIFEST			This list of files
 MANIFEST.SKIP
 README.md
 t/edge-cases.t
+t/eof.t
+t/eol.t
 t/extended_tests.t
 t/function.t
 t/integration.t
