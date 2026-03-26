@@ -1,8 +1,10 @@
 bin/example_abuse_check
+cpanfile
 lib/Mail/Message/Abuse.pm
 LICENSE
 Makefile.PL
 MANIFEST			This list of files
+MANIFEST.SKIP
 README.md
 t/edge-cases.t
 t/function.t
