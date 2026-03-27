@@ -668,6 +668,15 @@ None.  C<parse_email()> must have been called first.
 
 =head3 Returns
 
+  {
+    ip         => '209.85.218.67',
+    rdns       => 'mail-ej1-f67.google.com',
+    org        => 'Google LLC',
+    abuse      => 'network-abuse@google.com',
+    confidence => 'high',
+    note       => 'First external hop in Received: chain',
+  }
+
 On success, a hashref with the following keys (all always present):
 
 =over 4
@@ -891,20 +900,69 @@ for the unknown case: C<$orig-E<gt>{abuse} eq '(unknown)'>.
 
 =cut
 
-
 sub originating_ip {
     my ($self) = @_;
     $self->{_origin} //= $self->_find_origin();
     return $self->{_origin};
 }
 
-# -----------------------------------------------------------------------
-# Public: HTTP/HTTPS URLs
-# -----------------------------------------------------------------------
-
 =head2 embedded_urls()
 
-Returns a list of hashrefs for every HTTP/HTTPS URL in the body:
+=head3 Purpose
+
+Extracts every HTTP and HTTPS URL from the message body and enriches each
+one with the hosting IP address, network organisation name, abuse contact,
+and country code of the web server it points to.
+
+URL extraction runs across both the plain-text and HTML parts of the
+message.  When C<HTML::LinkExtor> is available, HTML C<href>, C<src>, and
+C<action> attributes are parsed structurally; a plain-text regex pass then
+catches any remaining bare URLs in both parts.
+
+Each unique URL is returned as a separate hashref.  When multiple distinct
+URLs share the same hostname, DNS resolution and WHOIS are performed only
+once for that hostname; all URLs on that host share the cached result.
+
+The result list is computed once and cached; subsequent calls on the same
+object return the same data without repeating any network I/O.
+
+=head3 Usage
+
+    $analyser->parse_email($raw);
+    my @urls = $analyser->embedded_urls();
+
+    if (@urls) {
+        for my $u (@urls) {
+            printf "URL:   %s\n", $u->{url};
+            printf "Host:  %s  IP: %s\n", $u->{host}, $u->{ip};
+            printf "Owner: %s\n", $u->{org};
+            printf "Abuse: %s\n", $u->{abuse};
+            print  "\n";
+        }
+    } else {
+        print "No HTTP/HTTPS URLs found.\n";
+    }
+
+    # Collect unique abuse contacts from URL hosts
+    my %seen;
+    my @url_contacts = grep { !$seen{$_}++ }
+                       map  { $_->{abuse} }
+                       grep { $_->{abuse} ne '(unknown)' }
+                       @urls;
+
+    # Check for URL shorteners
+    my @shorteners = grep { $_->{host} =~ /bit\.ly|tinyurl/i } @urls;
+    warn "Message contains URL shortener(s)\n" if @shorteners;
+
+=head3 Arguments
+
+None.  C<parse_email()> must have been called first.
+
+=head3 Returns
+
+A list (not an arrayref) of hashrefs, one per unique URL found in the body,
+in the order they were first encountered.  Returns an empty list if the body
+contains no HTTP or HTTPS URLs, or if C<parse_email()> has not been called.
 
     {
         url   => 'https://spamsite.example/offer',
@@ -914,6 +972,199 @@ Returns a list of hashrefs for every HTTP/HTTPS URL in the body:
         abuse => 'abuse@dodgy.example',
     }
 
+Each hashref contains the following keys (all always present):
+
+=over 4
+
+=item C<url> (string)
+
+The complete URL as it appeared in the message body, with any trailing
+punctuation characters (C<.>, C<,>, C<;>, C<:>, C<!>, C<?>, C<)>, C<E<gt>>,
+C<]>) stripped.  The scheme is preserved in the original case (C<HTTP://>,
+C<https://>, etc.).
+
+=item C<host> (string)
+
+The hostname portion of the URL, extracted from between the scheme and
+the first C</>, C<?>, C<:>, C<#>, or whitespace character.  Port numbers
+are not included.  Examples: C<'www.example.com'>, C<'bit.ly'>.
+
+=item C<ip> (string)
+
+The IPv4 address the hostname resolved to at analysis time.  Set to the
+literal string C<'(unresolved)'> if DNS resolution failed or returned no
+A record.  Note that short-lived spam infrastructure may resolve differently
+at report time than at analysis time.
+
+=item C<org> (string)
+
+The network organisation that owns the IP block, from RDAP or WHOIS.
+Set to C<'(unknown)'> if no organisation name is available or if the host
+could not be resolved.
+
+=item C<abuse> (string)
+
+The abuse contact email address for the IP block owner, from RDAP or WHOIS.
+Set to C<'(unknown)'> if no abuse address is available or if the host could
+not be resolved.  C<abuse_contacts()> uses this field; entries with the
+value C<'(unknown)'> are suppressed in the contact list.
+
+=item C<country> (string or undef)
+
+The two-letter ISO 3166-1 alpha-2 country code for the IP block, from RDAP
+or WHOIS.  C<undef> if no country code is available or if the host could
+not be resolved.
+
+=back
+
+=head3 Side Effects
+
+The first call (or first call after C<parse_email()>) performs network I/O
+for each unique hostname found, subject to the C<timeout> set at construction.
+For each unique hostname:
+
+=over 4
+
+=item * One A record (DNS) lookup to resolve the hostname to an IP address.
+
+=item * If resolution succeeds: one RDAP query to C<rdap.arin.net>
+(if C<LWP::UserAgent> is available).
+
+=item * If RDAP returns no organisation: one WHOIS query to C<whois.iana.org>
+followed by one query to the authoritative registry for the IP block.
+
+=back
+
+DNS and WHOIS are performed at most once per unique hostname per
+C<parse_email()> call, regardless of how many distinct URLs share that
+hostname.  All subsequent calls return the cached list.  The cache is
+invalidated by C<parse_email()>.
+
+=head3 Algorithm: URL extraction
+
+URLs are extracted from the concatenation of the decoded plain-text body
+and the decoded HTML body, in that order.  The two extraction passes are:
+
+=over 4
+
+=item 1. Structural HTML parsing (if C<HTML::LinkExtor> is installed)
+
+C<href>, C<src>, and C<action> attributes of all HTML tags are inspected.
+Any value beginning with C<http://> or C<https://> (case-insensitive) is
+collected.  This correctly handles URLs that contain characters which would
+confuse a plain-text regex, such as embedded spaces in quoted attribute
+values.
+
+=item 2. Plain-text regex pass
+
+A greedy regex C<https?://[^\s<>"'\)\]]+> is applied to the combined body
+text.  This catches bare URLs in plain-text parts and any URLs not captured
+by the structural pass.
+
+=back
+
+After both passes, the combined list is deduplicated (preserving first-seen
+order) and trailing punctuation is stripped from each URL.  The host is
+then extracted and used as a cache key for DNS and WHOIS lookups.
+
+=head3 Notes
+
+=over 4
+
+=item *
+
+Only C<http://> and C<https://> URLs are extracted.  C<ftp://>, C<mailto:>,
+and other schemes are not included.  Bare domain names without a scheme are
+also not included (those are handled by C<mailto_domains()>).
+
+=item *
+
+Duplicate URLs -- the same complete URL string appearing more than once --
+are reported only once.  Two URLs that differ only in case (e.g.
+C<HTTP://> vs C<https://>) are treated as distinct.
+
+=item *
+
+If a hostname appears in multiple distinct URLs, all URLs are returned
+individually as separate hashrefs, but the C<ip>, C<org>, C<abuse>, and
+C<country> fields are identical across all of them (copied from the single
+cached lookup).  Callers grouping by host should use the C<host> field
+as the key.
+
+=item *
+
+C<ip>, C<org>, and C<abuse> use sentinel strings rather than C<undef> for
+the unknown case: C<'(unresolved)'> for C<ip> when DNS fails, C<'(unknown)'>
+for C<org> and C<abuse> when WHOIS returns nothing.  Only C<country> is
+C<undef> in the unknown case.  Test accordingly:
+C<$u-E<gt>{ip} ne '(unresolved)'>, not C<defined $u-E<gt>{ip}>.
+
+=item *
+
+URL shorteners (C<bit.ly>, C<tinyurl.com>, and several dozen others) are
+detected by C<risk_assessment()>, which raises a C<url_shortener> flag.
+C<embedded_urls()> itself does not filter them out; they appear in the
+returned list so their hosting information can still be reported.
+
+=item *
+
+The order of URLs in the returned list reflects first-seen order across
+both the plain-text and HTML extraction passes.  Because the HTML parser
+and the regex run over the same combined string, a URL that appears in
+both an HTML attribute and as bare text will appear only once (at the
+position it was first seen).
+
+=back
+
+=head3 API Specification
+
+=head4 Input
+
+    # Params::Validate::Strict compatible specification
+    # No arguments.
+    []
+
+=head4 Output
+
+    # Return::Set compatible specification
+
+    # A list (possibly empty) of hashrefs:
+    (
+        {
+            type => HASHREF,
+            keys => {
+                url => {
+                    type  => SCALAR,
+                    regex => qr{^https?://}i,
+                },
+                host => {
+                    type  => SCALAR,
+                    # hostname without port; no leading scheme
+                },
+                ip => {
+                    type  => SCALAR,
+                    # dotted-quad IPv4, or the literal '(unresolved)'
+                },
+                org => {
+                    type  => SCALAR,
+                    # organisation name, or the literal '(unknown)'
+                },
+                abuse => {
+                    type  => SCALAR,
+                    # email address, or the literal '(unknown)'
+                },
+                country => {
+                    type     => SCALAR,
+                    optional => 1,  # present but may be undef
+                    regex    => qr/^[A-Z]{2}$/,
+                },
+            },
+        },
+        # ... one hashref per unique URL, in first-seen order
+    )
+
+    # Empty list when no HTTP/HTTPS URLs are present in the body.
+
 =cut
 
 sub embedded_urls {
@@ -922,19 +1173,60 @@ sub embedded_urls {
     return @{ $self->{_urls} };
 }
 
-# -----------------------------------------------------------------------
-# Public: mailto / reply-to / from domains
-# -----------------------------------------------------------------------
 
 =head2 mailto_domains()
 
-Returns a list of hashrefs, one per unique non-infrastructure domain found
-in C<mailto:> links, bare e-mail addresses in the body, and the envelope /
-header fields C<From:>, C<Reply-To:>, C<Sender:>, C<Return-Path:>,
-C<DKIM-Signature: d=> (signing domain), C<List-Unsubscribe:> (ESP domain),
-and the domain portion of C<Message-ID:>.
+=head3 Purpose
 
-Each hashref contains:
+Identifies every domain associated with the message as a contact, reply,
+or delivery address, then runs a full intelligence pipeline on each one to
+determine who hosts its web server, who handles its mail, who operates its
+DNS, and who registered it.
+
+This answers POD description item 3: "Who owns the reply-to / contact
+domains?"  A spammer may use one sending IP but route replies through an
+entirely different organisation's infrastructure.  This method surfaces all
+of those parties so each can be contacted independently.
+
+The result is computed once and cached; subsequent calls on the same object
+return the same list without repeating any network I/O.
+
+=head3 Usage
+
+    $analyser->parse_email($raw);
+    my @domains = $analyser->mailto_domains();
+
+    for my $d (@domains) {
+        printf "Domain : %s  (found in %s)\n", $d->{domain}, $d->{source};
+        printf "  Web  : %s  owned by %s\n",   $d->{web_ip}  // 'none',
+                                                $d->{web_org} // 'unknown';
+        printf "  MX   : %s\n", $d->{mx_host} // 'none';
+        printf "  Reg  : %s  (registered %s)\n", $d->{registrar}  // 'unknown',
+                                                  $d->{registered} // 'unknown';
+        if ($d->{recently_registered}) {
+            print  "  *** RECENTLY REGISTERED -- possible phishing domain ***\n";
+        }
+        print "\n";
+    }
+
+    # Collect registrar abuse contacts
+    my @reg_contacts = map  { $_->{registrar_abuse} }
+                       grep { defined $_->{registrar_abuse} }
+                       @domains;
+
+    # Find recently registered domains
+    my @fresh = grep { $_->{recently_registered} } @domains;
+
+=head3 Arguments
+
+None.  C<parse_email()> must have been called first.
+
+=head3 Returns
+
+A list (not an arrayref) of hashrefs, one per unique non-infrastructure
+domain, in the order each domain was first encountered across all sources.
+Returns an empty list if no qualifying domains are found, or if
+C<parse_email()> has not been called.
 
     {
         domain      => 'sminvestmentsupplychain.com',
@@ -967,17 +1259,501 @@ Each hashref contains:
         whois_raw   => '...',
     }
 
+Each hashref contains the following keys.  Keys marked "(optional)" are
+absent from the hashref when the corresponding information is unavailable;
+test with C<exists $d-E<gt>{key}> or C<defined $d-E<gt>{key}> as
+appropriate.
+
+=over 4
+
+=item C<domain> (string, always present)
+
+The domain name, lower-cased and with any trailing dot removed.  This is
+the full domain as it appeared in the source header or body (e.g.
+C<'sminvestmentsupplychain.com'>), not the registrable eTLD+1.
+
+=item C<source> (string, always present)
+
+A human-readable label identifying which header or body section the domain
+was first seen in.  Possible values:
+
+    'From: header'
+    'Reply-To: header'
+    'Return-Path: header'
+    'Sender: header'
+    'Message-ID: header'
+    'DKIM-Signature: d= (signing domain)'
+    'List-Unsubscribe: header'
+    'email address / mailto in body'
+
+When a domain appears in multiple sources, only the first-seen source is
+recorded.
+
+=item C<web_ip> (string, optional)
+
+The IPv4 address the domain's A record resolved to.  Absent if the domain
+has no A record or resolution failed.
+
+=item C<web_org> (string, optional)
+
+The network organisation hosting the web server at C<web_ip>, from RDAP or
+WHOIS.  Absent if C<web_ip> is absent or WHOIS returns no organisation.
+
+=item C<web_abuse> (string, optional)
+
+The abuse contact email for the web-hosting network, from RDAP or WHOIS.
+Absent if C<web_ip> is absent or WHOIS returns no abuse address.
+
+=item C<mx_host> (string, optional)
+
+The hostname of the lowest-preference MX record for the domain.
+Only populated when C<Net::DNS> is installed.  Absent if no MX record
+exists or C<Net::DNS> is unavailable.
+
+=item C<mx_ip> (string, optional)
+
+The IPv4 address of the MX host.  Absent if C<mx_host> is absent or
+the MX hostname could not be resolved.
+
+=item C<mx_org> (string, optional)
+
+The network organisation hosting the MX server, from RDAP or WHOIS.
+
+=item C<mx_abuse> (string, optional)
+
+The abuse contact email for the MX hosting network.
+
+=item C<ns_host> (string, optional)
+
+The hostname of the first NS (nameserver) record returned for the domain.
+Only populated when C<Net::DNS> is installed.
+
+=item C<ns_ip> (string, optional)
+
+The IPv4 address of the NS host.
+
+=item C<ns_org> (string, optional)
+
+The network organisation operating the nameserver, from RDAP or WHOIS.
+
+=item C<ns_abuse> (string, optional)
+
+The abuse contact email for the nameserver network.
+
+=item C<registrar> (string, optional)
+
+The registrar name as it appears in the domain's WHOIS record (e.g.
+C<'GoDaddy.com LLC'>).  Absent if WHOIS is unavailable or the registrar
+field was not found.
+
+=item C<registrar_abuse> (string, optional)
+
+The registrar's abuse contact email, extracted from the WHOIS record
+using the following patterns in priority order:
+C<Registrar Abuse Contact Email:>, C<Abuse Contact Email:>,
+C<abuse-contact:>.  Absent if none of these fields is present.
+
+=item C<registered> (string, optional)
+
+The domain's creation date as a string in C<YYYY-MM-DD> form (ISO 8601
+date only, time and timezone stripped).  Parsed from WHOIS using the
+following field names in priority order: C<Creation Date:>,
+C<Created On:>, C<Registration Time:>, C<registered:>.
+Absent if WHOIS is unavailable or no creation date field is found.
+
+=item C<expires> (string, optional)
+
+The domain's expiry date in C<YYYY-MM-DD> form.  Parsed from:
+C<Registry Expiry Date:>, C<Expiry Date:>, C<Expiration Date:>,
+C<paid-till:>.  Absent if not found.
+
+=item C<recently_registered> (integer 1, optional)
+
+Present and set to C<1> when the domain's C<registered> date is less
+than 180 days before the time of analysis.  Absent (not merely C<0>) when
+the domain is not recently registered or when no creation date is available.
+Used by C<risk_assessment()> to raise the C<recently_registered_domain> flag.
+
+=item C<whois_raw> (string, optional)
+
+The first 2048 bytes of the raw WHOIS response for the domain.  Intended
+for human inspection or logging.  Absent if WHOIS is unavailable or returns
+no data.
+
+=back
+
+=head3 Side Effects
+
+The first call (or first call after C<parse_email()>) performs network I/O
+for each unique domain collected, subject to the C<timeout> set at
+construction.  For each domain:
+
+=over 4
+
+=item * One A record (DNS) lookup for the domain itself (web hosting).
+
+=item * If C<Net::DNS> is installed: one MX record lookup; if an MX record
+is found, one further A lookup for the MX hostname.
+
+=item * If C<Net::DNS> is installed: one NS record lookup; if an NS record
+is found, one further A lookup for the NS hostname.
+
+=item * For each resolved IP (web, MX, NS): one RDAP or WHOIS query to
+identify the network owner.  The same IP is never queried twice.
+
+=item * Two WHOIS queries for the domain itself: one to C<whois.iana.org>
+to obtain the TLD's authoritative registry, followed by one to that registry.
+
+=back
+
+In the worst case (all records present, all IPs distinct, RDAP unavailable),
+each domain incurs: 3 A lookups + 1 MX lookup + 1 NS lookup + 3 WHOIS IP
+queries (6 TCP connections each) + 2 domain WHOIS queries (2 TCP connections)
+= up to 17 network operations.  In practice, shared hosting and cached DNS
+reduce this considerably.
+
+All results are cached per domain within a single C<parse_email()> lifetime.
+The cache is invalidated by C<parse_email()>.
+
+=head3 Domain collection sources
+
+Domains are collected from the following sources, in this order.  A domain
+that appears in multiple sources is recorded only once, with the source
+label of its first occurrence.
+
+=over 4
+
+=item 1. C<From:>, C<Reply-To:>, C<Return-Path:>, C<Sender:> headers
+
+All email addresses in these headers are parsed and their domain portions
+extracted.
+
+=item 2. C<Message-ID:> header
+
+The domain portion of the Message-ID is extracted.  This often reveals the
+real bulk-sending platform even when C<From:> is forged.  Domains that are
+members of the infrastructure exclusion list (C<gmail.com>, C<outlook.com>,
+C<google.com>, C<microsoft.com>, C<apple.com>, C<amazon.com>,
+C<yahoo.com>, C<googlemail.com>, C<hotmail.com>) are skipped here, as are
+any domain whose registrable eTLD+1 is in that list (e.g. C<mail.gmail.com>
+is excluded because C<gmail.com> is in the list).
+
+=item 3. C<DKIM-Signature: d=> tag
+
+The signing domain from the first C<DKIM-Signature:> header.  This is the
+organisation that cryptographically vouches for the message, and is
+actionable regardless of whether DKIM passes or fails.
+
+=item 4. C<List-Unsubscribe:> header
+
+Both C<https://> URLs and C<mailto:> addresses in this header are parsed.
+The domains identify the ESP or bulk sender responsible for delivery, who
+may be held accountable under CAN-SPAM and similar laws.
+
+=item 5. Body (plain-text and HTML)
+
+C<mailto:> links and bare C<user@domain> email addresses are extracted from
+the combined decoded body.  C<mailto:> links are recognised even when the
+C<@> sign is HTML-entity-encoded (C<=40> or C<=3D@>) from quoted-printable
+transfer.
+
+=back
+
+In all cases, domain names are lower-cased, trailing dots are stripped, and
+domains in the infrastructure exclusion list are silently discarded.
+
+=head3 Notes
+
+=over 4
+
+=item *
+
+Unlike C<embedded_urls()>, which reports the host of every URL, this method
+reports the contact domain -- the domain a human would write to, not
+necessarily the domain hosting the content.  A spam campaign might send
+from C<firmluminary.com> (contact domain) while linking to CDN URLs at
+C<cloudflare.com> (URL host).  Both are captured, by different methods.
+
+=item *
+
+The C<recently_registered> key is absent, not C<0>, when a domain is not
+recently registered or when no creation date is available.  Test for it with
+C<$d-E<gt>{recently_registered}> (boolean truthiness), not with C<eq '1'>.
+
+=item *
+
+All hosting sub-keys (C<web_ip>, C<mx_host>, C<ns_host>, etc.) are absent
+rather than C<undef> when the corresponding lookup yields no result.  This
+means C<keys %$d> will contain only the keys for which information was
+actually found.  Do not assume any optional key is present.
+
+=item *
+
+MX and NS lookups require C<Net::DNS>.  If C<Net::DNS> is not installed,
+only A record and WHOIS information is populated; C<mx_host>, C<mx_ip>,
+C<mx_org>, C<mx_abuse>, C<ns_host>, C<ns_ip>, C<ns_org>, and C<ns_abuse>
+will all be absent for every domain.
+
+=item *
+
+Date strings in C<registered> and C<expires> have the time and timezone
+components stripped (everything from C<T> or C<Z> onward in ISO 8601 form).
+They are stored as plain strings, not as epoch integers; use
+C<_parse_date_to_epoch()> (private) if a numeric comparison is needed.
+
+=item *
+
+C<whois_raw> is truncated to the first 2048 bytes of the raw WHOIS
+response.  The date and registrar fields are parsed from the full response
+before truncation, so truncation does not affect the structured fields.
+
+=back
+
+=head3 API Specification
+
+=head4 Input
+
+    # Params::Validate::Strict compatible specification
+    # No arguments.
+    []
+
+=head4 Output
+
+    # Return::Set compatible specification
+
+    # A list (possibly empty) of hashrefs, one per domain:
+    (
+        {
+            type => HASHREF,
+            keys => {
+                # Always present:
+                domain => { type => SCALAR },
+                source => { type => SCALAR },
+
+                # Optional -- absent when information is unavailable:
+                web_ip    => { type => SCALAR, optional => 1,
+                               regex => qr/^\d{1,3}(?:\.\d{1,3}){3}$/ },
+                web_org   => { type => SCALAR, optional => 1 },
+                web_abuse => { type => SCALAR, optional => 1 },
+
+                mx_host  => { type => SCALAR, optional => 1 },
+                mx_ip    => { type => SCALAR, optional => 1,
+                              regex => qr/^\d{1,3}(?:\.\d{1,3}){3}$/ },
+                mx_org   => { type => SCALAR, optional => 1 },
+                mx_abuse => { type => SCALAR, optional => 1 },
+
+                ns_host  => { type => SCALAR, optional => 1 },
+                ns_ip    => { type => SCALAR, optional => 1,
+                              regex => qr/^\d{1,3}(?:\.\d{1,3}){3}$/ },
+                ns_org   => { type => SCALAR, optional => 1 },
+                ns_abuse => { type => SCALAR, optional => 1 },
+
+                registrar       => { type => SCALAR, optional => 1 },
+                registrar_abuse => { type => SCALAR, optional => 1 },
+
+                registered => { type => SCALAR, optional => 1,
+                                regex => qr/^\d{4}-\d{2}-\d{2}$/ },
+                expires    => { type => SCALAR, optional => 1,
+                                regex => qr/^\d{4}-\d{2}-\d{2}$/ },
+
+                recently_registered => { type => SCALAR, optional => 1,
+                                         regex => qr/^1$/ },
+
+                whois_raw => { type => SCALAR, optional => 1 },
+            },
+        },
+        # ... one hashref per unique domain, in first-seen order
+    )
+
+    # Empty list when no qualifying domains are found.
+
 =cut
 
 sub mailto_domains {
-    my ($self) = @_;
-    $self->{_mailto_domains} //= $self->_extract_and_analyse_domains();
-    return @{ $self->{_mailto_domains} };
+	my $self = $_[0];
+
+	$self->{_mailto_domains} //= $self->_extract_and_analyse_domains();
+	return @{ $self->{_mailto_domains} };
 }
 
 =head2 all_domains()
 
-Union of every domain seen across HTTP URLs and mailto/reply domains.
+=head3 Purpose
+
+Returns the union of every registrable domain seen anywhere in the message:
+URL hosts from C<embedded_urls()> and contact domains from
+C<mailto_domains()>, collapsed to their registrable eTLD+1 form and
+deduplicated.
+
+This is the high-level answer to "what domains does this message reference?"
+It is suitable for bulk lookups, domain reputation checks, or feeds into
+external threat-intelligence systems where you want a flat, deduplicated
+list rather than the detailed per-domain hashrefs returned by the individual
+methods.
+
+Unlike C<mailto_domains()>, this method triggers no additional network I/O
+beyond what C<embedded_urls()> and C<mailto_domains()> already perform; it
+is a pure in-memory union and normalisation of their results.
+
+=head3 Usage
+
+    $analyser->parse_email($raw);
+    my @domains = $analyser->all_domains();
+
+    # Print every unique registrable domain
+    print "$_\n" for @domains;
+
+    # Feed into a reputation lookup
+    for my $dom (@domains) {
+        my $score = $reputation_api->lookup($dom);
+        warn "Known bad domain: $dom\n" if $score > 0.8;
+    }
+
+    # Check for overlap with a known-bad domain list
+    my %blocklist = map { $_ => 1 } @known_bad_domains;
+    my @hits = grep { $blocklist{$_} } @domains;
+
+=head3 Arguments
+
+None.  C<parse_email()> must have been called first.  Calling
+C<all_domains()> before C<embedded_urls()> or C<mailto_domains()> is safe;
+it will trigger both lazily.
+
+=head3 Returns
+
+A list (not an arrayref) of plain strings, each being a registrable
+eTLD+1 domain name (see Algorithm below), lower-cased, with no duplicates,
+in first-seen order.  Returns an empty list if the message contains no
+URLs and no contact domains, or if C<parse_email()> has not been called.
+
+The list contains plain scalars, not hashrefs.  For the full intelligence
+detail associated with each domain, call C<embedded_urls()> and
+C<mailto_domains()> directly.
+
+=head3 Side Effects
+
+Triggers C<embedded_urls()> and C<mailto_domains()> if they have not
+already been called on the current message, which in turn performs network
+I/O as documented in those methods.  No additional network I/O is performed
+beyond what those two methods require.  Results are not independently cached;
+the caching is handled by C<embedded_urls()> and C<mailto_domains()>.
+
+=head3 Algorithm: eTLD+1 normalisation
+
+Both input sources are normalised to their registrable domain
+(eTLD+1) before deduplication, using the following heuristic:
+
+=over 4
+
+=item *
+
+A hostname with no dot (e.g. C<localhost>) is discarded (returns C<undef>
+from the internal function and is skipped).
+
+=item *
+
+A hostname with exactly two labels (e.g. C<example.com>, C<evil.ru>) is
+returned as-is; it is already registrable.
+
+=item *
+
+A hostname with three or more labels is inspected at the TLD (last label)
+and the second-level (penultimate label).  If the TLD is a two-letter
+country code (C<uk>, C<au>, C<jp>, etc.) and the second-level label is one
+of the common delegated second-levels C<co>, C<com>, C<net>, C<org>,
+C<gov>, C<edu>, C<ac>, or C<me>, then three labels are kept (e.g.
+C<mail.evil.co.uk> becomes C<evil.co.uk>).  Otherwise two labels are kept
+(e.g. C<mail.evil.com> becomes C<evil.com>).
+
+=back
+
+This heuristic handles the most common cases correctly.  It is not a full
+Public Suffix List implementation; uncommon second-level delegations (e.g.
+C<.ltd.uk>, C<.plc.uk>, C<.asn.au>) are not recognised and will produce
+a two-label result that includes the second-level label rather than three
+labels.
+
+The normalisation is applied to both sources:
+
+=over 4
+
+=item * URL hosts (from C<embedded_urls()>): the host extracted from each
+URL is normalised.  For example, the URL
+C<https://www.spamco.example/offer> contributes C<spamco.example>.
+
+=item * Contact domains (from C<mailto_domains()>): the full domain
+stored in each hashref is normalised.  For example, the From: address
+C<E<lt>spammer@sub.spamco.exampleE<gt>> contributes C<spamco.example>.
+
+=back
+
+This means a URL at C<www.spamco.example> and a contact address at
+C<sub.spamco.example> both collapse to C<spamco.example>, and that domain
+appears only once in the result.
+
+=head3 Notes
+
+=over 4
+
+=item *
+
+Domains from C<mailto_domains()> are normalised before deduplication;
+domains from C<embedded_urls()> are also normalised.  This differs from
+C<mailto_domains()> itself, which stores the full subdomain (e.g.
+C<sub.spamco.example>) in its C<domain> key.  The loss of subdomain
+granularity is intentional: C<all_domains()> is designed for registrar-
+and ISP-level lookups, where the registrable domain is the relevant unit.
+
+=item *
+
+The returned strings are lower-cased.  No trailing dot is ever present.
+
+=item *
+
+The order of elements is: URL-host domains first (in the order URLs were
+first seen), followed by contact domains (in the order they were first
+collected by C<mailto_domains()>), with any domain already seen from the
+URL pass omitted from the contact-domain pass.
+
+=item *
+
+A domain that appears only as a subdomain in one source and only as a
+registrable domain in another source will still be deduplicated correctly,
+because both are normalised to the same registrable form before the
+deduplication check.
+
+=item *
+
+Calling C<all_domains()> does not interfere with or invalidate the caches
+of C<embedded_urls()> or C<mailto_domains()>; those methods can still be
+called afterwards to retrieve their full detail.
+
+=back
+
+=head3 API Specification
+
+=head4 Input
+
+    # Params::Validate::Strict compatible specification
+    # No arguments.
+    []
+
+=head4 Output
+
+    # Return::Set compatible specification
+
+    # A list (possibly empty) of plain strings:
+    (
+        {
+            type  => SCALAR,
+            regex => qr/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/,
+            # Lower-cased registrable domain; no trailing dot;
+            # at least two dot-separated labels.
+        },
+        # ... one string per unique registrable domain, in first-seen order
+    )
+
+    # Empty list when the message contains no URLs and no contact domains.
 
 =cut
 
@@ -999,14 +1775,63 @@ sub all_domains {
     return @out;
 }
 
-# -----------------------------------------------------------------------
-# Public: sending software fingerprint
-# -----------------------------------------------------------------------
-
 =head2 sending_software()
 
-Returns a list of hashrefs identifying software or infrastructure
-clues extracted from the email headers.  Each entry has:
+=head3 Purpose
+
+Returns information extracted from headers that identify the software or
+server-side infrastructure used to compose or inject the message.  These
+headers are injected by email clients, bulk-mailing libraries, and shared
+hosting control panels, and are often the most direct evidence of how the
+spam was sent and from which server.
+
+Headers examined: C<X-Mailer>, C<User-Agent>, C<X-PHP-Originating-Script>,
+C<X-Source>, C<X-Source-Args>, C<X-Source-Host>.
+
+The C<X-PHP-Originating-Script>, C<X-Source>, and C<X-Source-Host> headers
+in particular are injected automatically by many shared hosting providers
+(cPanel, Plesk, DirectAdmin) and reveal the exact PHP script path and
+hostname responsible.  A hosting abuse team can use these values to
+identify the compromised or malicious account immediately, without needing
+to search logs.
+
+The data is extracted synchronously during C<parse_email()> with no network
+I/O.  This method simply returns the pre-built list.
+
+=head3 Usage
+
+    $analyser->parse_email($raw);
+    my @sw = $analyser->sending_software();
+
+    for my $s (@sw) {
+        printf "%-30s : %s\n", $s->{header}, $s->{value};
+        printf "  Note: %s\n", $s->{note};
+    }
+
+    # Check for shared-hosting injection headers
+    my @hosting = grep {
+        $_->{header} =~ /^x-(?:php-originating-script|source)/
+    } @sw;
+
+    if (@hosting) {
+        print "Shared-hosting script detected -- report to hosting abuse team:\n";
+        print "  $_->{header}: $_->{value}\n" for @hosting;
+    }
+
+    # Extract the mailer name if present
+    my ($mailer) = grep { $_->{header} eq 'x-mailer' } @sw;
+    printf "Sent with: %s\n", $mailer->{value} if $mailer;
+
+=head3 Arguments
+
+None.  C<parse_email()> must have been called first.
+
+=head3 Returns
+
+A list (not an arrayref) of hashrefs, one per recognised software-fingerprint
+header that was present in the message, in alphabetical order of header name.
+Returns an empty list if none of the watched headers are present, or if
+C<parse_email()> has not been called.
 
     {
         header => 'X-PHP-Originating-Script',
@@ -1014,14 +1839,178 @@ clues extracted from the email headers.  Each entry has:
         note   => 'PHP script on shared hosting - report to hosting abuse team',
     }
 
-Headers examined: C<X-Mailer>, C<User-Agent>, C<X-PHP-Originating-Script>,
-C<X-Source>, C<X-Source-Args>, C<X-Source-Host>.
+Each hashref contains exactly three keys, all always present:
+
+=over 4
+
+=item C<header> (string)
+
+The header name, lower-cased.  One of the six values listed in the
+Algorithm section below.
+
+=item C<value> (string)
+
+The header value exactly as it appeared in the message (not decoded or
+transformed in any way).
+
+=item C<note> (string)
+
+A fixed, human-readable annotation describing what this header represents
+and the recommended action.  The note string is determined by the header
+name and is the same for all messages; it is not derived from the value.
+See the Algorithm section for the note associated with each header.
+
+=back
+
+=head3 Side Effects
+
+None.  All data is collected during C<parse_email()> and this method
+only returns the pre-collected list.  No network I/O is performed.
+
+=head3 Algorithm: headers examined
+
+The following six headers are examined during C<parse_email()>.  They are
+checked in alphabetical order; the result list preserves that order
+(i.e. C<user-agent> appears before C<x-mailer> which appears before
+C<x-php-originating-script>, etc.).  At most one entry per header name is
+produced even if the header appears more than once; the first occurrence is
+used.
+
+=over 4
+
+=item C<user-agent>
+
+Note: C<"Email client identifier">
+
+Set by some email clients (Thunderbird, Evolution) as an alternative to
+C<X-Mailer>.  Identifies the application that composed the message.
+
+=item C<x-mailer>
+
+Note: C<"Email client or bulk-mailer identifier">
+
+The most widely used header for identifying the sending application.
+Values range from standard clients (C<"Apple Mail">, C<"Microsoft Outlook">)
+to bulk-mailing libraries (C<"PHPMailer 6.0">, C<"MailMate">).  Its presence
+in spam often reveals the library used to generate the campaign.
+
+=item C<x-php-originating-script>
+
+Note: C<"PHP script on shared hosting -- report to hosting abuse team">
+
+Injected by cPanel and similar shared-hosting control panels when a PHP
+script sends mail via the local MTA.  The value typically takes the form
+C<uid:script.php> (e.g. C<"1000:newsletter.php">), directly identifying
+the Unix user account and the script responsible.  This is the single most
+actionable header for shared-hosting abuse reports.
+
+=item C<x-source>
+
+Note: C<"Source file on shared hosting -- report to hosting abuse team">
+
+Also injected by shared-hosting platforms, typically containing the full
+filesystem path to the sending script (e.g.
+C<"/home/user/public_html/contact.php">).  Complements
+C<X-PHP-Originating-Script>.
+
+=item C<x-source-args>
+
+Note: C<"Command-line args injected by shared hosting provider">
+
+The command-line arguments of the process that sent the mail, injected by
+some hosting platforms.  May reveal interpreter invocations or script
+parameters useful for forensic analysis.
+
+=item C<x-source-host>
+
+Note: C<"Sending hostname injected by shared hosting provider">
+
+The hostname of the server that submitted the message, injected by the
+hosting platform.  Useful when the IP in the C<Received:> chain is a shared
+outbound relay rather than the originating server.
+
+=back
+
+=head3 Notes
+
+=over 4
+
+=item *
+
+The result list is reset to empty by each call to C<parse_email()>.  If no
+watched headers are present in the current message, the list is empty.
+
+=item *
+
+The alphabetical ordering of entries is a side effect of iterating over
+the C<%sw_notes> hash in sorted key order.  It is stable across calls on
+the same message.
+
+=item *
+
+Header names are stored lower-cased (e.g. C<'x-mailer'>, not C<'X-Mailer'>).
+Header values are stored verbatim, preserving the original case and
+whitespace.
+
+=item *
+
+The C<note> field is a fixed annotation string chosen by the module, not
+text extracted from the message.  It is safe to display directly in reports
+without sanitisation.
+
+=item *
+
+If both C<X-PHP-Originating-Script> and C<X-Source> are present (common on
+cPanel systems), both are returned as separate list entries.  A caller
+building a hosting abuse report should include all entries whose C<header>
+begins with C<x->.
+
+=back
+
+=head3 API Specification
+
+=head4 Input
+
+    # Params::Validate::Strict compatible specification
+    # No arguments.
+    []
+
+=head4 Output
+
+    # Return::Set compatible specification
+
+    # A list (possibly empty) of hashrefs, in alphabetical header-name order:
+    (
+        {
+            type => HASHREF,
+            keys => {
+                header => {
+                    type  => SCALAR,
+                    regex => qr/^(?:user-agent|x-mailer|x-php-originating-script
+                                   |x-source|x-source-args|x-source-host)$/x,
+                },
+                value => {
+                    type => SCALAR,
+                    # Verbatim header value; may be any non-empty string.
+                },
+                note => {
+                    type  => SCALAR,
+                    # Fixed annotation string; one of the six strings
+                    # documented in the Algorithm section above.
+                },
+            },
+        },
+        # ... one hashref per recognised header present, alphabetical order
+    )
+
+    # Empty list when none of the six watched headers are present.
 
 =cut
 
 sub sending_software {
-    my ($self) = @_;
-    return @{ $self->{_sending_sw} };
+	my $self = $_[0];
+
+	return @{ $self->{_sending_sw} };
 }
 
 # -----------------------------------------------------------------------
@@ -1045,34 +2034,9 @@ in their logs.
 =cut
 
 sub received_trail {
-    my ($self) = @_;
-    return @{ $self->{_rcvd_tracking} };
-}
+	my $self = $_[0];
 
-
-
-sub _decode_mime_words {
-    my ($self, $str) = @_;
-    return '' unless defined $str;
-    $str =~ s/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/_decode_ew($1,$2,$3)/ge;
-    return $str;
-}
-
-sub _decode_ew {
-    my ($charset, $enc, $text) = @_;
-    my $raw;
-    if (uc($enc) eq 'B') {
-        $raw = decode_base64($text);
-    } else {
-        $text =~ s/_/ /g;
-        $raw  = decode_qp($text);
-    }
-    # Best-effort UTF-8; silently ignore decode errors
-    if (lc($charset) ne 'utf-8') {
-        # For non-UTF-8 charsets just return the raw bytes — good enough
-        # for display-name spoof detection which only needs ASCII matching
-    }
-    return $raw;
+	return @{ $self->{_rcvd_tracking} };
 }
 
 # -----------------------------------------------------------------------
@@ -1329,6 +2293,30 @@ sub risk_assessment {
 
     $self->{_risk} = { level => $level, score => $score, flags => \@flags };
     return $self->{_risk};
+}
+
+sub _decode_mime_words {
+    my ($self, $str) = @_;
+    return '' unless defined $str;
+    $str =~ s/=\?([^?]+)\?([BbQq])\?([^?]*)\?=/_decode_ew($1,$2,$3)/ge;
+    return $str;
+}
+
+sub _decode_ew {
+    my ($charset, $enc, $text) = @_;
+    my $raw;
+    if (uc($enc) eq 'B') {
+        $raw = decode_base64($text);
+    } else {
+        $text =~ s/_/ /g;
+        $raw  = decode_qp($text);
+    }
+    # Best-effort UTF-8; silently ignore decode errors
+    if (lc($charset) ne 'utf-8') {
+        # For non-UTF-8 charsets just return the raw bytes — good enough
+        # for display-name spoof detection which only needs ASCII matching
+    }
+    return $raw;
 }
 
 sub _parse_auth_results_cached {
