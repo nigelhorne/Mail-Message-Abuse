@@ -624,18 +624,273 @@ sub parse_email {
 
 =head2 originating_ip()
 
-Returns a hashref:
+=head3 Purpose
 
-    {
-        ip         => '209.85.218.67',
-        rdns       => 'mail-ej1-f67.google.com',
-        org        => 'Google LLC',
-        abuse      => 'network-abuse@google.com',
-        confidence => 'high',
-        note       => 'First external hop in Received: chain',
+Identifies the IP address of the machine that originally injected the
+message into the mail system, as opposed to any intermediate relay that
+passed it along.  This is the address of the spammer's machine, their ISP's
+outbound mail server, or a compromised host -- the primary target for an
+ISP abuse report.
+
+The method walks the C<Received:> chain from oldest to newest, skips every
+hop whose IP is in a private, reserved, or trusted range, and returns the
+first remaining (external) IP, enriched with reverse DNS, network ownership,
+and abuse contact information gathered via rDNS, RDAP, and WHOIS.
+
+If no usable IP can be found in the C<Received:> chain, the method falls back
+to the C<X-Originating-IP> header injected by some webmail providers.
+
+The result is computed once and cached; subsequent calls on the same object
+return the same hashref without repeating any network I/O.
+
+=head3 Usage
+
+    $analyser->parse_email($raw);
+    my $orig = $analyser->originating_ip();
+
+    if (defined $orig) {
+        printf "Origin: %s (%s)\n",   $orig->{ip},  $orig->{rdns};
+        printf "Owner:  %s\n",        $orig->{org};
+        printf "Abuse:  %s\n",        $orig->{abuse};
+        printf "Confidence: %s\n",    $orig->{confidence};
+    } else {
+        print "Could not determine originating IP.\n";
     }
 
+    # Confidence-gated reporting
+    if (defined $orig && $orig->{confidence} eq 'high') {
+        send_abuse_report($orig->{abuse}, $analyser->abuse_report_text());
+    }
+
+=head3 Arguments
+
+None.  C<parse_email()> must have been called first.
+
+=head3 Returns
+
+On success, a hashref with the following keys (all always present):
+
+=over 4
+
+=item C<ip> (string)
+
+The dotted-quad IPv4 address of the identified originating host.
+
+=item C<rdns> (string)
+
+The reverse DNS (PTR) hostname for C<ip>.  Set to the literal string
+C<'(no reverse DNS)'> if no PTR record exists or the lookup fails.
+The presence and format of rDNS is used by C<risk_assessment()> to detect
+residential broadband senders.
+
+=item C<org> (string)
+
+The network organisation name that owns the IP block, sourced from RDAP
+(preferred) or WHOIS (fallback).  Set to C<'(unknown)'> if neither source
+returns an organisation name.
+
+=item C<abuse> (string)
+
+The abuse contact email address for the IP block owner, sourced from RDAP
+or WHOIS.  Set to C<'(unknown)'> if no abuse address can be determined.
+C<abuse_contacts()> uses this field when building the contact list; entries
+with the value C<'(unknown)'> are suppressed.
+
+=item C<confidence> (string)
+
+One of three values reflecting how reliably the IP was identified:
+
+=over 8
+
+=item C<'high'>
+
+Two or more distinct external hops were found in the C<Received:> chain
+(after removing private and trusted IPs).  The bottom-most hop is reported.
+A chain of two or more external hops is strong evidence the first-seen IP
+is the true origin.
+
+=item C<'medium'>
+
+Exactly one external hop was found in the C<Received:> chain.  The IP is
+likely correct but cannot be independently corroborated by a relay record.
+
+=item C<'low'>
+
+No usable IP was found in the C<Received:> chain; the IP was taken from the
+C<X-Originating-IP> header instead.  This header is injected by webmail
+interfaces and is not verifiable; a sender can forge it.
+
+=back
+
+=item C<note> (string)
+
+A human-readable explanation of how the IP was selected.  Examples:
+
+    'First external hop in Received: chain'
+    'Taken from X-Originating-IP (webmail, unverified)'
+
+=item C<country> (string or undef)
+
+The two-letter ISO 3166-1 alpha-2 country code for the IP block, sourced
+from RDAP or WHOIS.  C<undef> if no country code is available.
+C<risk_assessment()> uses this field to raise the C<high_spam_country> flag
+for a set of statistically high-volume spam-originating countries.
+
+=back
+
+Returns C<undef> if no suitable originating IP can be determined (no
+C<Received:> headers, all IPs are private or trusted, no usable
+C<X-Originating-IP> header, or C<parse_email()> has not been called).
+
+=head3 Side Effects
+
+The first call (or the first call after a C<parse_email()>) performs the
+following network I/O, subject to the C<timeout> set at construction:
+
+=over 4
+
+=item * One PTR (rDNS) lookup for the identified IP address.
+
+=item * One RDAP query to C<rdap.arin.net> (if C<LWP::UserAgent> is available).
+
+=item * If RDAP returns no organisation: one WHOIS query to C<whois.iana.org>
+to obtain the authoritative registry, followed by one WHOIS query to that
+registry.
+
+=back
+
+All subsequent calls return the cached hashref.  The cache is invalidated by
+C<parse_email()>.
+
+=head3 Algorithm: Received: chain traversal
+
+The C<Received:> headers are walked from bottom (oldest) to top (most
+recent).  For each header, the first IPv4 address is extracted in priority
+order:
+
+=over 4
+
+=item 1. A bracketed address: C<[1.2.3.4]>
+
+=item 2. A parenthesised address: C<(hostname [1.2.3.4])>
+
+=item 3. An address following C<from hostname>
+
+=item 4. Any bare dotted-quad as a last resort
+
+=back
+
+An extracted IP is discarded if it:
+
+=over 4
+
+=item * Falls in any of the following excluded ranges: 0.0.0.0/8 (RFC 1122),
+127.0.0.0/8 (loopback), 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+(RFC 1918), 169.254.0.0/16 (link-local), 100.64.0.0/10 (CGN, RFC 6598),
+192.0.0.0/24, 192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24 (RFC 5737
+documentation ranges), 255.0.0.0/8 (broadcast), or IPv6 loopback/ULA.
+
+=item * Matches any entry in the C<trusted_relays> list passed to C<new()>.
+
+=item * Contains an octet greater than 255 (i.e., is syntactically invalid).
+
+=back
+
+All non-discarded IPs are collected; the first (oldest) one is reported as
+the origin.  The count of non-discarded IPs determines the confidence level.
+
+=head3 Notes
+
+=over 4
+
+=item *
+
+Only IPv4 addresses are extracted.  IPv6 addresses in C<Received:> headers
+are ignored.  This is a known limitation; most spam still travels via IPv4
+infrastructure.
+
+=item *
+
+The algorithm trusts the C<Received:> headers as written.  A sophisticated
+sender who controls an intermediate relay can insert a forged C<Received:>
+header with an arbitrary IP.  The C<confidence> field reflects this: C<high>
+confidence requires two independent external hops but cannot guarantee that
+neither hop forged its Received: line.
+
+=item *
+
+If all C<Received:> IPs are private or trusted, the C<X-Originating-IP>
+header is used as a fallback.  This header is unverifiable and receives
+C<confidence> C<'low'>.  Brackets and whitespace are stripped from its
+value before use.
+
+=item *
+
+The C<country> key is C<undef>, not the empty string, when no country code
+is available.  Test with C<defined $orig-E<gt>{country}>, not a boolean
+check.
+
+=item *
+
+C<org> and C<abuse> default to the literal string C<'(unknown)'>, not
+C<undef>.  This means they are always defined; use string equality to test
+for the unknown case: C<$orig-E<gt>{abuse} eq '(unknown)'>.
+
+=back
+
+=head3 API Specification
+
+=head4 Input
+
+    # Params::Validate::Strict compatible specification
+    # No arguments; invocant must be a Mail::Message::Abuse object
+    # on which parse_email() has previously been called.
+    []
+
+=head4 Output
+
+    # Return::Set compatible specification
+
+    # On success:
+    {
+        type => HASHREF,
+        keys => {
+            ip => {
+                type  => SCALAR,
+                regex => qr/^\d{1,3}(?:\.\d{1,3}){3}$/,  # dotted-quad IPv4
+            },
+            rdns => {
+                type  => SCALAR,
+                # hostname string, or the literal '(no reverse DNS)'
+            },
+            org => {
+                type  => SCALAR,
+                # organisation name, or the literal '(unknown)'
+            },
+            abuse => {
+                type  => SCALAR,
+                # email address, or the literal '(unknown)'
+            },
+            confidence => {
+                type  => SCALAR,
+                regex => qr/^(?:high|medium|low)$/,
+            },
+            note => {
+                type => SCALAR,
+            },
+            country => {
+                type     => SCALAR,
+                optional => 1,  # present but may be undef
+                regex    => qr/^[A-Z]{2}$/,
+            },
+        },
+    }
+
+    # On failure (no usable IP found):
+    undef
+
 =cut
+
 
 sub originating_ip {
     my ($self) = @_;
