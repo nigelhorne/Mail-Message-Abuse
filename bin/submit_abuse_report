@@ -1,0 +1,371 @@
+#!/usr/bin/env perl
+# -----------------------------------------------------------------------
+# submit_abuse_report -- analyse a spam/phishing email and send abuse
+#                           reports to all relevant parties.
+#
+# Usage:
+#   submit_abuse_report [options] spam.eml
+#   submit_abuse_report [options] < spam.eml
+#
+# Options:
+#   --dry-run              Show what would be sent and to whom; do not
+#                          actually connect to any mail server.
+#   --from ADDRESS         Envelope / From: address for the outgoing
+#                          reports (required unless --dry-run).
+#   --smtp HOST[:PORT]     SMTP relay to use (default: localhost:25).
+#   --trusted CIDR         Trusted relay CIDR to skip in Received: chain.
+#                          May be repeated for multiple relays.
+#   --timeout SECS         Network timeout in seconds (default: 15).
+#   --verbose              Print analysis progress to STDERR.
+#   --help                 Show this help text.
+#
+# Examples:
+#   # Dry run -- see what would be sent without sending anything
+#   submit_abuse_report --dry-run spam.eml
+#
+#   # Send reports via the local MTA
+#   submit_abuse_report --from postmaster@myisp.example spam.eml
+#
+#   # Send via a specific SMTP relay, skipping our own outbound IP
+#   submit_abuse_report \
+#       --from abuse-reporter@example.com \
+#       --smtp mail.example.com:587 \
+#       --trusted 203.0.113.0/24 \
+#       spam.eml
+# -----------------------------------------------------------------------
+use 5.010;
+use strict;
+use warnings;
+use autodie qw(:all);
+use utf8;
+use open qw(:std :encoding(UTF-8));
+
+use Getopt::Long qw(GetOptions);
+use Pod::Usage   qw(pod2usage);
+use Net::SMTP;
+use POSIX        qw(strftime);
+use File::Basename qw(basename);
+use lib '.';     # find Email/Abuse/Investigator.pm in development tree
+use Email::Abuse::Investigator;
+
+# -----------------------------------------------------------------------
+# Command-line options
+# -----------------------------------------------------------------------
+my $dry_run  = 0;
+my $from     = '';
+my $smtp_arg = 'localhost:25';
+my $timeout  = 15;
+my $verbose  = 0;
+my $help     = 0;
+my @trusted;
+
+GetOptions(
+    'dry-run'    => \$dry_run,
+    'from=s'     => \$from,
+    'smtp=s'     => \$smtp_arg,
+    'trusted=s'  => \@trusted,
+    'timeout=i'  => \$timeout,
+    'verbose'    => \$verbose,
+    'help'       => \$help,
+) or pod2usage(2);
+
+pod2usage( -exitval => 0, -verbose => 2 ) if $help;
+
+unless ($dry_run || $from) {
+	die basename($0), ": --from ADDRESS is required unless --dry-run is used.\nRun with --help for usage.";
+}
+
+if ($from && $from !~ /\@/) {
+	die basename($0), ": --from value '$from' does not look like an email address.";
+}
+
+my ($smtp_host, $smtp_port) = split /:/, $smtp_arg, 2;
+$smtp_port //= 25;
+
+# -----------------------------------------------------------------------
+# Read the raw email
+# -----------------------------------------------------------------------
+my $raw;
+if (@ARGV) {
+    open my $fh, '<:raw', $ARGV[0] or die basename($0) . ": cannot open '$ARGV[0]': $!";
+    local $/;
+    $raw = <$fh>;
+    close $fh;
+} else {
+    binmode STDIN, ':raw';
+    local $/;
+    $raw = <STDIN>;
+}
+
+die basename($0), ": no email data supplied."
+    unless defined $raw && length $raw;
+
+# -----------------------------------------------------------------------
+# Analyse
+# -----------------------------------------------------------------------
+print STDERR "Analysing message...\n" if $verbose;
+
+my $inv = Email::Abuse::Investigator->new(
+    timeout        => $timeout,
+    trusted_relays => \@trusted,
+    verbose        => $verbose,
+);
+$inv->parse_email(\$raw);
+
+my @contacts = $inv->abuse_contacts();
+
+unless (@contacts) {
+    print STDERR "No abuse contacts could be determined.  Nothing to send.\n";
+    exit 0;
+}
+
+my $report_text = $inv->abuse_report_text();
+my $orig        = $inv->originating_ip();
+my $risk        = $inv->risk_assessment();
+
+# Build a consistent subject line for all outgoing reports
+my $subject = _build_subject($orig, $risk);
+
+# -----------------------------------------------------------------------
+# Dry run: describe what would be sent
+# -----------------------------------------------------------------------
+if ($dry_run) {
+    _dry_run_report(\@contacts, $subject, $report_text);
+    exit 0;
+}
+
+# -----------------------------------------------------------------------
+# Live run: send one email per unique abuse contact
+# -----------------------------------------------------------------------
+my $sent  = 0;
+my $failed = 0;
+
+for my $contact (@contacts) {
+    my $to   = $contact->{address};
+    my $role = $contact->{role};
+
+    print STDERR "Sending to $to ($role)...\n" if $verbose;
+
+    my $ok = _send_report(
+        smtp_host   => $smtp_host,
+        smtp_port   => $smtp_port,
+        from        => $from,
+        to          => $to,
+        subject     => $subject,
+        body        => $report_text,
+        timeout     => $timeout,
+    );
+
+    if ($ok) {
+        printf "Sent   : %-45s  %s\n", $to, $role;
+        $sent++;
+    } else {
+        printf "FAILED : %-45s  %s\n", $to, $role;
+        $failed++;
+    }
+}
+
+printf "\nDone: %d sent, %d failed.\n", $sent, $failed;
+exit( $failed ? 1 : 0 );
+
+# -----------------------------------------------------------------------
+# _dry_run_report( \@contacts, $subject, $report_text )
+#
+# Print a full description of what would be sent without sending anything.
+# -----------------------------------------------------------------------
+sub _dry_run_report {
+    my ($contacts, $subject, $body) = @_;
+
+    my $bar = '=' x 72;
+    print "$bar\n";
+    print "  DRY RUN -- no email will be sent\n";
+    print "$bar\n\n";
+
+    printf "Subject  : %s\n\n", $subject;
+
+    printf "%-3s  %-45s  %s\n", '#', 'Recipient', 'Role';
+    printf "%-3s  %-45s  %s\n", '-' x 3, '-' x 45, '-' x 24;
+
+    my $n = 1;
+    for my $c (@{$contacts}) {
+        printf "%-3d  %-45s  %s\n", $n++, $c->{address}, $c->{role};
+        printf "     via: %-42s  note: %s\n",
+            $c->{via}, ($c->{note} || '');
+        print "\n";
+    }
+
+    print "$bar\n";
+    print "  REPORT BODY (identical text sent to every recipient above)\n";
+    print "$bar\n\n";
+    print $body;
+    print "\n$bar\n";
+    printf "  Total: %d recipient%s\n", scalar @{$contacts},
+        @{$contacts} == 1 ? '' : 's';
+    print "$bar\n";
+}
+
+# -----------------------------------------------------------------------
+# _send_report( %args ) -> bool
+#
+# Send a single abuse report via SMTP.  Returns 1 on success, 0 on failure.
+# Errors are printed to STDERR; the script continues to the next recipient.
+# -----------------------------------------------------------------------
+sub _send_report {
+    my (%a) = @_;
+
+    my $date = strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime);
+    my $msg_id = sprintf '<%s.%d@%s>',
+        strftime('%Y%m%d%H%M%S', gmtime),
+        $$,
+        do { (my $h = $a{from}) =~ s/.*\@//; $h };
+
+    # Build a minimal but valid RFC 2822 message
+    my $mail = join "\r\n",
+        "Date: $date",
+        "From: $a{from}",
+        "To: $a{to}",
+        "Subject: $a{subject}",
+        "Message-ID: $msg_id",
+        "MIME-Version: 1.0",
+        "Content-Type: text/plain; charset=UTF-8",
+        "Content-Transfer-Encoding: 8bit",
+        "X-Mailer: Email::Abuse::Investigator submit_abuse_report",
+        "",
+        $a{body};
+
+    my $smtp = eval {
+        Net::SMTP->new(
+            $a{smtp_host},
+            Port    => $a{smtp_port},
+            Timeout => $a{timeout},
+        );
+    };
+
+    unless ($smtp) {
+        warn "SMTP connect to $a{smtp_host}:$a{smtp_port} failed: $@\n";
+        return 0;
+    }
+
+    my $ok = eval {
+        $smtp->mail( $a{from} )       or die "MAIL FROM failed";
+        $smtp->to(   $a{to}   )       or die "RCPT TO failed";
+        $smtp->data()                 or die "DATA failed";
+        $smtp->datasend($mail)        or die "datasend failed";
+        $smtp->dataend()              or die "dataend failed";
+        $smtp->quit();
+        1;
+    };
+
+    unless ($ok) {
+        my $err = $@ || 'unknown SMTP error';
+        $err =~ s/\s+$//;
+        warn "SMTP error sending to $a{to}: $err\n";
+        return 0;
+    }
+
+    return 1;
+}
+
+# -----------------------------------------------------------------------
+# _build_subject( $orig_hashref, $risk_hashref ) -> string
+#
+# Build a concise, informative subject line for the abuse report.
+# -----------------------------------------------------------------------
+sub _build_subject {
+    my ($orig, $risk) = @_;
+
+    my $ip_part   = $orig ? $orig->{ip} : 'unknown origin';
+    my $level     = $risk->{level};
+    my $date_part = strftime('%Y-%m-%d', gmtime);
+
+    return "Abuse report [$level]: spam/phishing from $ip_part ($date_part)";
+}
+
+__END__
+
+=head1 NAME
+
+submit_abuse_report -- analyse a spam/phishing email and send abuse
+reports to all relevant parties
+
+=head1 SYNOPSIS
+
+    submit_abuse_report [options] spam.eml
+    submit_abuse_report [options] < spam.eml
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--dry-run>
+
+Analyse the message and print a full description of what would be sent
+and to whom, but do not connect to any mail server or send anything.
+Useful for reviewing before committing to sending.
+
+=item B<--from ADDRESS>
+
+The envelope sender and From: address for all outgoing reports.
+Required unless B<--dry-run> is used.
+
+=item B<--smtp HOST[:PORT]>
+
+SMTP relay to use for sending.  Defaults to C<localhost:25>.  Supply a
+port by appending it after a colon, e.g. C<mail.example.com:587>.
+
+=item B<--trusted CIDR>
+
+A trusted relay IP or CIDR block to skip when identifying the true
+originating IP.  List your own mail server infrastructure here.  The
+option may be repeated for multiple relays:
+
+    --trusted 10.0.0.0/8 --trusted 192.168.1.1
+
+=item B<--timeout SECS>
+
+Network timeout in seconds for DNS, WHOIS, RDAP, and SMTP operations.
+Default: 15.
+
+=item B<--verbose>
+
+Print analysis progress messages to STDERR.
+
+=item B<--help>
+
+Print this help text and exit.
+
+=back
+
+=head1 DESCRIPTION
+
+Reads a raw RFC 2822 spam or phishing email (from a file or STDIN),
+analyses it using C<Email::Abuse::Investigator>, and sends an abuse
+report to each identified contact: the sending ISP, URL hosts, domain
+registrars, account providers, DKIM signers, and ESPs.
+
+All recipients receive identical report text generated by
+C<Email::Abuse::Investigator::abuse_report_text()>.  The subject line
+includes the risk level and originating IP for easy triage.
+
+Use B<--dry-run> first to review the analysis and confirm the recipients
+before sending.
+
+=head1 EXIT STATUS
+
+    0   All reports sent successfully (or --dry-run completed).
+    1   One or more reports failed to send.
+    2   Bad command-line options or missing required argument.
+
+=head1 DEPENDENCIES
+
+    Email::Abuse::Investigator
+    Net::SMTP          (core since Perl 5)
+    Getopt::Long       (core since Perl 5)
+    Pod::Usage         (core since Perl 5.6)
+    POSIX              (core since Perl 5)
+
+=head1 SEE ALSO
+
+L<Email::Abuse::Investigator>
+
+=cut
