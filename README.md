@@ -28,7 +28,7 @@ hosted URLs, and suspicious domains
 # DESCRIPTION
 
 `Mail::Message::Abuse` examines the raw source of a spam/phishing e-mail
-and answers the questions manual abuse investigators ask:
+and answers the questions abuse investigators ask:
 
 - 1. Where did the message really come from?
 
@@ -154,7 +154,7 @@ Union of every domain seen across HTTP URLs and mailto/reply domains.
 
 ## sending\_software()
 
-Returns an arrayref of hashrefs identifying software or infrastructure
+Returns a list of hashrefs identifying software or infrastructure
 clues extracted from the email headers.  Each entry has:
 
     {
@@ -168,17 +168,17 @@ Headers examined: `X-Mailer`, `User-Agent`, `X-PHP-Originating-Script`,
 
 ## received\_trail()
 
-Returns an arrayref of hashrefs, one per `Received:` header (oldest first),
+Returns a list of hashrefs, one per `Received:` header (oldest first),
 each containing the extracted IP, envelope recipient (`for` clause), and
 the server's internal tracking ID (`id` clause).  These are the tracking
 identifiers a receiving ISP's abuse team needs to look up the mail session
 in their logs.
 
-    [
+    (
       { received => '...raw header...', ip => '1.2.3.4',
         for => 'victim@example.com', id => 'ABC123' },
       ...
-    ]
+    )
 
 ## risk\_assessment()
 

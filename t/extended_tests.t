@@ -94,8 +94,8 @@ sub make_email {
     $hdrs .= "Reply-To: $reply_to\n" if defined $reply_to;
     $hdrs .= "To: $to\n";
     $hdrs .= "Subject: $subject\n";
-    $hdrs .= "Date: " . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime) . "\n";
-    $hdrs .= "Message-ID: <ext\@test>\n";
+    $hdrs .= "Date: " . ($h{date} // POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime)) . "\n";
+    $hdrs .= "Message-ID: " . ($h{message_id} // '<ext@test>') . "\n";
     $hdrs .= "Content-Type: $ct\n";
     $hdrs .= "Content-Transfer-Encoding: 7bit\n";
     $hdrs .= "X-Originating-IP: $xoip\n" if defined $xoip;
@@ -1035,6 +1035,245 @@ subtest '_enrich_ip -- rdns defaults to (no reverse DNS) when undef' => sub {
     my $result = $a->_enrich_ip('198.51.100.1', 'low', 'xoip note');
     is $result->{rdns}, '(no reverse DNS)',
         'rdns defaults to "(no reverse DNS)" when _reverse_dns returns undef';
+};
+
+
+# =============================================================================
+# 24. dkim_domain_mismatch -- INFO for passing DKIM, MEDIUM for failing
+# =============================================================================
+
+subtest 'risk_assessment -- dkim_domain_mismatch: INFO when DKIM passes (ESP scenario)' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(make_email(
+        from => 'Sender <sender@merchant.example>',
+        auth => 'mx.test; dkim=pass header.d=sendgrid.net'));
+    push @{ $a->{_headers} }, { name => 'dkim-signature',
+        value => 'v=1; d=sendgrid.net; s=s1; b=xxx' };
+    $a->{_auth_results} = undef;  # force re-parse to pick up DKIM-Signature
+    $a->{_origin} = { ip=>'1.2.3.4', rdns=>'mail.sendgrid.net', confidence=>'medium',
+                      org=>'SendGrid', abuse=>'abuse@sendgrid.com', note=>'', country=>undef };
+    $a->{_urls} = []; $a->{_mailto_domains} = [];
+    my $risk = $a->risk_assessment();
+    my ($mm) = grep { $_->{flag} eq 'dkim_domain_mismatch' } @{ $risk->{flags} };
+    ok defined $mm, 'dkim_domain_mismatch raised when DKIM domain differs from From:';
+    is $mm->{severity}, 'INFO', 'severity is INFO when DKIM passes (normal ESP behaviour)';
+    like $mm->{detail}, qr/third-party sender/, 'detail mentions third-party sender';
+    restore_net();
+};
+
+subtest 'risk_assessment -- dkim_domain_mismatch: MEDIUM when DKIM fails' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(make_email(
+        from => 'Sender <sender@merchant.example>',
+        auth => 'mx.test; dkim=fail'));
+    push @{ $a->{_headers} }, { name => 'dkim-signature',
+        value => 'v=1; d=evil-signer.example; s=s1; b=xxx' };
+    $a->{_auth_results} = undef;
+    $a->{_origin} = { ip=>'1.2.3.4', rdns=>'mail.evil.example', confidence=>'medium',
+                      org=>'X', abuse=>'a@b', note=>'', country=>undef };
+    $a->{_urls} = []; $a->{_mailto_domains} = [];
+    my $risk = $a->risk_assessment();
+    my ($mm) = grep { $_->{flag} eq 'dkim_domain_mismatch' } @{ $risk->{flags} };
+    ok defined $mm, 'dkim_domain_mismatch raised when DKIM fails and domains differ';
+    is $mm->{severity}, 'MEDIUM', 'severity is MEDIUM when DKIM fails';
+    like $mm->{detail}, qr/did not pass/, 'detail mentions DKIM did not pass';
+    restore_net();
+};
+
+subtest 'risk_assessment -- no dkim_domain_mismatch when signing domain matches From:' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(make_email(
+        from => 'Sender <sender@example.com>',
+        auth => 'mx.test; dkim=pass'));
+    push @{ $a->{_headers} }, { name => 'dkim-signature',
+        value => 'v=1; d=example.com; s=s1; b=xxx' };
+    $a->{_auth_results} = undef;
+    $a->{_origin} = { ip=>'1.2.3.4', rdns=>'mail.example.com', confidence=>'medium',
+                      org=>'X', abuse=>'a@b', note=>'', country=>undef };
+    $a->{_urls} = []; $a->{_mailto_domains} = [];
+    my $risk = $a->risk_assessment();
+    ok !scalar(grep { $_->{flag} eq 'dkim_domain_mismatch' } @{ $risk->{flags} }),
+        'no dkim_domain_mismatch when signing domain matches From: domain';
+    restore_net();
+};
+
+# =============================================================================
+# 25. sending_software() -- returns a list, not an arrayref
+# =============================================================================
+
+subtest 'sending_software() -- returns list of hashrefs with correct structure' => sub {
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(
+        "From: x\@y.com\n"
+      . "X-Mailer: PHPMailer 6.0\n"
+      . "X-PHP-Originating-Script: 1000:mailer.php\n"
+      . "X-Source: /var/www/html/mailer.php\n\nbody");
+    my @sw = $a->sending_software();
+    ok scalar @sw >= 2, 'at least two sending software entries found';
+    ok ref($sw[0]) eq 'HASH', 'first element is a hashref (list, not arrayref)';
+    for my $key (qw(header value note)) {
+        ok exists $sw[0]{$key}, "hashref has '$key' key";
+    }
+    my ($php) = grep { $_->{header} eq 'x-php-originating-script' } @sw;
+    ok defined $php, 'x-php-originating-script found';
+    is $php->{value}, '1000:mailer.php', 'correct value extracted';
+    like $php->{note}, qr/hosting abuse/, 'note mentions hosting abuse team';
+};
+
+subtest 'sending_software() -- empty list when no relevant headers' => sub {
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email("From: x\@y.com\nSubject: test\n\nbody");
+    my @sw = $a->sending_software();
+    is scalar @sw, 0, 'empty list when no sending-software headers present';
+};
+
+subtest 'sending_software() -- reset between parse_email calls' => sub {
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email("From: x\@y.com\nX-Mailer: SpamTool 1.0\n\nbody");
+    ok scalar($a->sending_software()) > 0, 'X-Mailer found in first parse';
+    $a->parse_email("From: x\@y.com\nSubject: clean\n\nbody");
+    is scalar($a->sending_software()), 0, 'sending_software reset on re-parse';
+};
+
+# =============================================================================
+# 26. received_trail() -- returns a list, envelope-for and server-id extracted
+# =============================================================================
+
+subtest 'received_trail() -- extracts for: and id: clauses correctly' => sub {
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(
+        "Received: from relay.example.com (relay.example.com [91.198.174.5])"
+      . " by mx.test with ESMTP id ABC123XYZ"
+      . " for <victim\@bandsman.co.uk>\n"
+      . "From: x\@y.com\n\nbody");
+    my @trail = $a->received_trail();
+    ok scalar @trail >= 1, 'at least one trail entry returned';
+    ok ref($trail[0]) eq 'HASH', 'element is a hashref (list, not arrayref)';
+    my ($hop) = grep { defined $_->{id} && $_->{id} =~ /ABC123/ } @trail;
+    ok defined $hop,              'hop with server ID found';
+    is $hop->{for}, 'victim@bandsman.co.uk', 'envelope-for address extracted';
+    like $hop->{id}, qr/ABC123/,  'server tracking ID extracted';
+    is $hop->{ip},  '91.198.174.5', 'IP from same hop correct';
+};
+
+subtest 'received_trail() -- "for multiple recipients" does not capture bogus address' => sub {
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(
+        "Received: from h [91.198.174.1] by mx for multiple recipients\n"
+      . "From: x\@y.com\n\nbody");
+    my @trail = $a->received_trail();
+    for my $hop (@trail) {
+        ok !defined($hop->{for}) || $hop->{for} =~ /\@/,
+            'for: is undef or contains an @ sign (no bare word captured)';
+    }
+};
+
+subtest 'received_trail() -- reset between parse_email calls' => sub {
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(
+        "Received: from h [91.198.174.1] by mx with ESMTP id ID001"
+      . " for <v\@t.com>\nFrom: x\@y.com\n\nbody");
+    ok scalar($a->received_trail()) > 0, 'trail populated after first parse';
+    $a->parse_email("From: x\@y.com\n\nbody");
+    is scalar($a->received_trail()), 0, 'received_trail reset on re-parse';
+};
+
+# =============================================================================
+# 27. Message-ID domain filtered through TRUSTED_DOMAINS
+# =============================================================================
+
+subtest 'mailto_domains -- gmail Message-ID domain filtered out' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    # Supply the gmail Message-ID at parse time so the domain pipeline sees it
+    $a->parse_email(make_email(
+        from        => 'x@spamco.example',
+        return_path => '<x@spamco.example>',
+        message_id  => '<CABm-xyz123@mail.gmail.com>',
+        body        => 'test'));
+    {   no warnings 'redefine';
+        local *Mail::Message::Abuse::_resolve_host = sub { undef };
+        local *Mail::Message::Abuse::_domain_whois = sub { undef };
+        my @names = map { $_->{domain} } $a->mailto_domains();
+        ok !scalar(grep { /gmail/ } @names),
+            'gmail.com Message-ID domain filtered out by TRUSTED_DOMAINS';
+        ok scalar(grep { $_ eq 'spamco.example' } @names),
+            'non-infrastructure From: domain still captured';
+    }
+    restore_net();
+};
+
+subtest 'mailto_domains -- unknown Message-ID domain included with correct source' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    # Supply the bulk-platform Message-ID at parse time
+    $a->parse_email(make_email(
+        from        => 'x@y.com',
+        return_path => '<x@y.com>',
+        message_id  => '<msg001@bulkplatform.example>',
+        body        => 'test'));
+    {   no warnings 'redefine';
+        local *Mail::Message::Abuse::_resolve_host = sub { undef };
+        local *Mail::Message::Abuse::_domain_whois = sub { undef };
+        my @doms = $a->mailto_domains();
+        my ($d) = grep { $_->{domain} eq 'bulkplatform.example' } @doms;
+        ok defined $d, 'unknown Message-ID domain appears in mailto_domains';
+        is $d->{source}, 'Message-ID: header', 'source labelled as Message-ID: header';
+    }
+    restore_net();
+};
+
+# =============================================================================
+# 28. suspicious_date -- past vs future wording
+# =============================================================================
+
+subtest 'risk_assessment -- suspicious_date past: detail says "in the past"' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(make_email(date => 'Mon, 01 Jan 2024 00:00:00 +0000'));
+    $a->{_origin} = { ip=>'1.2.3.4', rdns=>'mail.ok', confidence=>'medium',
+                      org=>'X', abuse=>'a@b', note=>'', country=>undef };
+    $a->{_urls} = []; $a->{_mailto_domains} = [];
+    my $risk = $a->risk_assessment();
+    my ($f) = grep { $_->{flag} eq 'suspicious_date' } @{ $risk->{flags} };
+    ok defined $f, 'suspicious_date raised for stale date';
+    like $f->{detail}, qr/in the past/, 'detail says "in the past"';
+    unlike $f->{detail}, qr/from now/, 'detail does not say "from now"';
+    restore_net();
+};
+
+subtest 'risk_assessment -- suspicious_date future: detail says "in the future"' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    $a->parse_email(make_email(date => 'Mon, 01 Jan 2099 00:00:00 +0000'));
+    $a->{_origin} = { ip=>'1.2.3.4', rdns=>'mail.ok', confidence=>'medium',
+                      org=>'X', abuse=>'a@b', note=>'', country=>undef };
+    $a->{_urls} = []; $a->{_mailto_domains} = [];
+    my $risk = $a->risk_assessment();
+    my ($f) = grep { $_->{flag} eq 'suspicious_date' } @{ $risk->{flags} };
+    ok defined $f, 'suspicious_date raised for far-future date';
+    like $f->{detail}, qr/in the future/, 'detail says "in the future"';
+    restore_net();
+};
+
+subtest 'risk_assessment -- missing_date raised when no Date: header' => sub {
+    null_net();
+    my $a = new_ok('Mail::Message::Abuse');
+    my $today = POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime);
+    $a->parse_email(
+        "Received: from h [91.198.174.1] by mx\n"
+      . "From: x\@y.com\n\nbody");
+    $a->{_origin} = { ip=>'1.2.3.4', rdns=>'mail.ok', confidence=>'medium',
+                      org=>'X', abuse=>'a@b', note=>'', country=>undef };
+    $a->{_urls} = []; $a->{_mailto_domains} = [];
+    my $risk = $a->risk_assessment();
+    my ($f) = grep { $_->{flag} eq 'missing_date' } @{ $risk->{flags} };
+    ok defined $f, 'missing_date flagged when no Date: header';
+    is $f->{severity}, 'MEDIUM', 'missing_date is MEDIUM severity';
+    restore_net();
 };
 
 done_testing();

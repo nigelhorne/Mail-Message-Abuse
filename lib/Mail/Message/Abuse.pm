@@ -3,7 +3,7 @@ package Mail::Message::Abuse;
 use strict;
 use warnings;
 
-our $VERSION = '0.01';
+our $VERSION = '2.10';
 
 =head1 NAME
 
@@ -35,7 +35,7 @@ hosted URLs, and suspicious domains
 =head1 DESCRIPTION
 
 C<Mail::Message::Abuse> examines the raw source of a spam/phishing e-mail
-and answers the questions manual abuse investigators ask:
+and answers the questions abuse investigators ask:
 
 =over 4
 
@@ -432,7 +432,7 @@ sub all_domains {
 
 =head2 sending_software()
 
-Returns an arrayref of hashrefs identifying software or infrastructure
+Returns a list of hashrefs identifying software or infrastructure
 clues extracted from the email headers.  Each entry has:
 
     {
@@ -448,7 +448,7 @@ C<X-Source>, C<X-Source-Args>, C<X-Source-Host>.
 
 sub sending_software {
     my ($self) = @_;
-    return $self->{_sending_sw};
+    return @{ $self->{_sending_sw} };
 }
 
 # -----------------------------------------------------------------------
@@ -457,23 +457,23 @@ sub sending_software {
 
 =head2 received_trail()
 
-Returns an arrayref of hashrefs, one per C<Received:> header (oldest first),
+Returns a list of hashrefs, one per C<Received:> header (oldest first),
 each containing the extracted IP, envelope recipient (C<for> clause), and
 the server's internal tracking ID (C<id> clause).  These are the tracking
 identifiers a receiving ISP's abuse team needs to look up the mail session
 in their logs.
 
-    [
+    (
       { received => '...raw header...', ip => '1.2.3.4',
         for => 'victim@example.com', id => 'ABC123' },
       ...
-    ]
+    )
 
 =cut
 
 sub received_trail {
     my ($self) = @_;
-    return $self->{_rcvd_tracking};
+    return @{ $self->{_rcvd_tracking} };
 }
 
 
@@ -598,15 +598,25 @@ sub risk_assessment {
             "DMARC result: $auth->{dmarc}");
     }
 
-    # DKIM domain differs from From: domain — signing key may be impersonating
+    # DKIM signing domain vs From: domain
     if ($auth->{dkim_domain}) {
         my ($from_domain) = ($self->_header_value('from') // '') =~ /\@([\w.-]+)/;
         if ($from_domain) {
             my $reg_dkim = _registrable($auth->{dkim_domain}) // $auth->{dkim_domain};
             my $reg_from = _registrable(lc $from_domain)     // lc $from_domain;
-            if ($reg_dkim ne $reg_from && $auth->{dkim} && $auth->{dkim} =~ /^pass/i) {
-                $flag->('MEDIUM', 'dkim_domain_mismatch',
-                    "DKIM signed by '$auth->{dkim_domain}' but From: domain is '$from_domain' — message routed through third-party sender");
+            if ($reg_dkim ne $reg_from) {
+                if ($auth->{dkim} && $auth->{dkim} =~ /^pass/i) {
+                    # DKIM passes but signing domain differs — normal for bulk ESPs
+                    # (SendGrid, Mailchimp etc. sign with their own domain)
+                    $flag->('INFO', 'dkim_domain_mismatch',
+                        "DKIM signed by '$auth->{dkim_domain}' but From: domain is '$from_domain'"
+                        . " — message sent via third-party sender (normal for bulk/ESP mail)");
+                } else {
+                    # DKIM fails AND domains differ — more suspicious
+                    $flag->('MEDIUM', 'dkim_domain_mismatch',
+                        "DKIM signed by '$auth->{dkim_domain}' but From: domain is '$from_domain'"
+                        . " and DKIM did not pass — possible impersonation");
+                }
             }
         }
     }
@@ -617,11 +627,19 @@ sub risk_assessment {
         $flag->('MEDIUM', 'missing_date',
             'No Date: header — violates RFC 5322; common in spam');
     } else {
-        # Check for dates wildly outside the current window (> 7 days off)
+        # Check for dates wildly outside the current window (> 7 days off).
+        # Note: timezone offsets are ignored; the window is wide enough that
+        # this does not cause false positives for any real timezone.
         my $date_epoch = _parse_rfc2822_date($date_raw);
-        if (defined $date_epoch && abs(time() - $date_epoch) > 7 * 86400) {
-            $flag->('LOW', 'suspicious_date',
-                "Date: '$date_raw' is more than 7 days from now — possible header forgery");
+        if (defined $date_epoch) {
+            my $delta = time() - $date_epoch;
+            if ($delta > 7 * 86400) {
+                $flag->('LOW', 'suspicious_date',
+                    "Date: '$date_raw' is more than 7 days in the past — possible header forgery or very stale message");
+            } elsif ($delta < -(7 * 86400)) {
+                $flag->('LOW', 'suspicious_date',
+                    "Date: '$date_raw' is more than 7 days in the future — possible header forgery");
+            }
         }
     }
 
@@ -1001,6 +1019,9 @@ sub abuse_contacts {
     }
 
     # 5. DKIM signing domain — the organisation that vouches for the message
+    # The full domain pipeline (web/MX/NS/WHOIS) is already run on the DKIM
+    # domain via mailto_domains(), so here we only need the provider-table
+    # lookup for fast resolution of well-known ESPs.
     my $auth = $self->_parse_auth_results_cached();
     if ($auth->{dkim_domain}) {
         my $pa = $self->_provider_abuse_for_host($auth->{dkim_domain});
@@ -1009,16 +1030,6 @@ sub abuse_contacts {
                    address => $pa->{email},
                    note    => $pa->{note},
                    via     => 'provider-table');
-        }
-        # Also run through the full domain pipeline if not already seen
-        if (!grep { $_->{domain} eq $auth->{dkim_domain} } $self->mailto_domains()) {
-            my $info = $self->_analyse_domain($auth->{dkim_domain});
-            if ($info->{registrar_abuse}) {
-                $add->(role    => "DKIM signing domain registrar: $auth->{dkim_domain}",
-                       address => $info->{registrar_abuse},
-                       note    => 'Registrar: ' . ($info->{registrar} // '(unknown)'),
-                       via     => 'domain-whois');
-            }
         }
     }
 
@@ -1126,7 +1137,7 @@ sub report {
     push @out, "";
 
     # ---- Sending software / infrastructure clues ----
-    my @sw = @{ $self->{_sending_sw} };
+    my @sw = $self->sending_software();
     if (@sw) {
         push @out, "[ SENDING SOFTWARE / INFRASTRUCTURE CLUES ]";
         for my $s (@sw) {
@@ -1138,7 +1149,7 @@ sub report {
 
     # ---- Received chain tracking IDs ----
     my @trail = grep { defined $_->{id} || defined $_->{for} }
-                @{ $self->{_rcvd_tracking} };
+                $self->received_trail();
     if (@trail) {
         push @out, "[ RECEIVED CHAIN TRACKING IDs ]";
         push @out, "  (Supply these to the relevant ISP abuse team to trace the session)";
@@ -1323,7 +1334,7 @@ sub _split_message {
     # ---- Per-hop tracking IDs from Received: chain (oldest first) ----
     for my $rcvd (reverse @{ $self->{_received} }) {
         my $ip  = $self->_extract_ip_from_received($rcvd);
-        my ($for_addr) = $rcvd =~ /\bfor\s+<?([^\s>]+\@[\w.-]+)>?/i;
+        my ($for_addr) = $rcvd =~ /\bfor\s+<?([^\s>]+\@[\w.-]+\.[\w]+)>?/i;
         my ($srv_id)   = $rcvd =~ /\bid\s+([\w.-]+)/i;
         next unless defined $ip || defined $for_addr || defined $srv_id;
         push @{ $self->{_rcvd_tracking} }, {
@@ -1522,10 +1533,16 @@ sub _extract_and_analyse_domains {
             for $self->_domains_from_text($val);
     }
 
-    # Message-ID domain — often reveals the real sending platform
+    # Message-ID domain — often reveals the real sending platform.
+    # Skip well-known infrastructure domains (gmail.com, outlook.com etc.)
+    # that appear in Message-IDs but are never actionable abuse targets.
+    # Check both the exact domain and its registrable parent.
     my $mid = $self->_header_value('message-id');
     if ($mid && $mid =~ /\@([\w.-]+)/) {
-        $record->(lc $1, 'Message-ID: header');
+        my $mid_dom = lc $1;
+        my $mid_reg = _registrable($mid_dom) // $mid_dom;
+        $record->($mid_dom, 'Message-ID: header')
+            unless $TRUSTED_DOMAINS{$mid_dom} || $TRUSTED_DOMAINS{$mid_reg};
     }
 
     # DKIM signing domain — the organisation that vouches for the message
@@ -1899,6 +1916,11 @@ sub _parse_date_to_epoch {
 # Parse a RFC 2822 date string to a Unix epoch.
 # Handles: "Mon, 01 Jan 2024 00:00:00 +0000" and common variants.
 # Returns undef if the string cannot be parsed.
+#
+# NOTE: timezone offsets (+0530, -0800 etc.) are intentionally ignored.
+# The function returns UTC-equivalent seconds assuming the time component
+# is UTC.  For the sole current use-case (7-day suspicious_date window)
+# the maximum error is ~14 hours, which is well within the 7-day tolerance.
 sub _parse_rfc2822_date {
     my ($str) = @_;
     return undef unless $str;
