@@ -1,6 +1,6 @@
-Revision history for Mail-Message-Abuse
+Revision history for Email-Abuse-Investigator
 
-0.02
+0.02	Fri Mar 27 19:04:37 EDT 2026
 	- Added bin/submit_abuse_report
 
 0.01	Fri Mar 27 14:23:09 EDT 2026

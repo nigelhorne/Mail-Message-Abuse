@@ -159,11 +159,11 @@ hosted URLs, and suspicious domains
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 SYNOPSIS
 
@@ -4024,8 +4024,8 @@ sub report {
         push @out, '';
     }
 
-    push @out, '=' x 72;
-    return join("\n", @out) . "\n";
+	push @out, '=' x 72;
+	return join("\n", @out) . "\n";
 }
 
 # _split_message( $text )
@@ -4242,15 +4242,15 @@ sub _decode_body {
 #   dotted-quad IPv4 addresses are considered.
 
 sub _find_origin {
-    my ($self) = @_;
-    my @candidates;
+	my $self = $_[0];
+	my @candidates;
 
-    for my $hdr (reverse @{ $self->{_received} }) {
-        my $ip = $self->_extract_ip_from_received($hdr) // next;
-        next if $self->_is_private($ip);
-        next if $self->_is_trusted($ip);
-        push @candidates, $ip;
-    }
+	for my $hdr (reverse @{ $self->{_received} }) {
+		my $ip = $self->_extract_ip_from_received($hdr) // next;
+		next if $self->_is_private($ip);
+		next if $self->_is_trusted($ip);
+		push @candidates, $ip;
+	}
 
     unless (@candidates) {
         my $xoip = $self->_header_value('x-originating-ip');

@@ -140,8 +140,8 @@ my $subject = _build_subject($orig, $risk);
 # Dry run: describe what would be sent
 # -----------------------------------------------------------------------
 if ($dry_run) {
-    _dry_run_report(\@contacts, $subject, $report_text, \$raw, $inv);
-    exit 0;
+	_dry_run_report(\@contacts, $subject, $report_text, \$raw, $inv);
+	exit 0;
 }
 
 # -----------------------------------------------------------------------
@@ -470,13 +470,13 @@ sub _build_mime_message {
 # Build a concise, informative subject line for the abuse report.
 # -----------------------------------------------------------------------
 sub _build_subject {
-    my ($orig, $risk) = @_;
+	my ($orig, $risk) = @_;
 
-    my $ip_part   = $orig ? $orig->{ip} : 'unknown origin';
-    my $level     = $risk->{level};
-    my $date_part = strftime('%Y-%m-%d', gmtime);
+	my $ip_part   = $orig ? $orig->{ip} : 'unknown origin';
+	my $level     = $risk->{level};
+	my $date_part = strftime('%Y-%m-%d', gmtime);
 
-    return "Abuse report [$level]: spam/phishing from $ip_part ($date_part)";
+	return "Abuse report [$level]: spam/phishing from $ip_part ($date_part)";
 }
 
 __END__
