@@ -241,15 +241,171 @@ my %PROVIDER_ABUSE = (
 
 =head1 METHODS
 
+=head1 METHODS
+
 =head2 new( %options )
 
-    my $a = Mail::Message::Abuse->new(
+=head3 Purpose
+
+Constructs and returns a new C<Mail::Message::Abuse> analyser object.  The
+object is stateless until C<parse_email()> is called; all analysis results
+are stored on the object and retrieved via the public accessor methods
+documented below.
+
+A single object may be reused for multiple emails by calling C<parse_email()>
+again: all cached state from the previous message is discarded automatically.
+
+=head3 Usage
+
+    # Minimal -- all options take safe defaults
+    my $analyser = Mail::Message::Abuse->new();
+
+    # With options
+    my $analyser = Mail::Message::Abuse->new(
         timeout        => 15,
-        trusted_relays => ['203.0.113.0/24'],
+        trusted_relays => ['203.0.113.0/24', '10.0.0.0/8'],
         verbose        => 0,
     );
 
+    $analyser->parse_email($raw_rfc2822_text);
+    my $origin   = $analyser->originating_ip();
+    my @urls     = $analyser->embedded_urls();
+    my @domains  = $analyser->mailto_domains();
+    my $risk     = $analyser->risk_assessment();
+    my @contacts = $analyser->abuse_contacts();
+    print $analyser->report();
+
+=head3 Arguments
+
+All arguments are optional named parameters passed as a flat key-value list.
+
+=over 4
+
+=item C<timeout> (integer, default 10)
+
+Maximum number of seconds to wait for any single network operation: DNS
+lookups, WHOIS TCP connections, and RDAP HTTP requests each respect this
+limit independently.  Set to 0 to disable timeouts (not recommended for
+production use).  Values must be non-negative integers.
+
+=item C<trusted_relays> (arrayref of strings, default [])
+
+A list of IP addresses or CIDR blocks that are under your own
+administrative control and should be excluded from the Received: chain
+analysis.  Any hop whose IP matches an entry here is skipped when
+determining C<originating_ip()>.
+
+Each element may be:
+
+=over 8
+
+=item * An exact IPv4 address: C<'192.0.2.1'>
+
+=item * A CIDR block: C<'192.0.2.0/24'>, C<'10.0.0.0/8'>
+
+=back
+
+Use this to exclude your own mail relays, load balancers, and internal
+infrastructure so they are never mistaken for the spam origin.
+
+Example: if your inbound gateway at 203.0.113.5 adds a Received: header
+before passing the message to your mail server, pass
+C<trusted_relays =E<gt> ['203.0.113.5']> and that hop will be ignored.
+
+=item C<verbose> (boolean, default 0)
+
+When true, diagnostic messages are written to STDERR as the object
+processes each email.  Messages are prefixed with C<[Mail::Message::Abuse]>
+and describe each major analysis step (header parsing, DNS resolution,
+WHOIS queries, etc.).  Intended for development and debugging; leave false
+in production.
+
+=back
+
+=head3 Returns
+
+A blessed C<Mail::Message::Abuse> object.  The object is immediately usable;
+no network I/O is performed during construction.
+
+=head3 Side Effects
+
+None.  The constructor performs no I/O.  All network activity is deferred
+until the first call to a method that requires it (C<originating_ip()>,
+C<embedded_urls()>, C<mailto_domains()>, or any method that calls them).
+
+=head3 Notes
+
+=over 4
+
+=item *
+
+The C<timeout> option uses C<//> (defined-or), so C<timeout =E<gt> 0> is
+stored correctly as zero.  All other constructor options also use C<//>.
+
+=item *
+
+Unknown option keys are silently ignored.
+
+=item *
+
+The object is not thread-safe.  If you process multiple emails
+concurrently, construct a separate C<Mail::Message::Abuse> object per
+thread or per-request.
+
+=item *
+
+The C<alarm()> mechanism used by the raw WHOIS client is not reliable on
+Windows or inside threaded Perl interpreters.  All other functionality
+works on those platforms; only WHOIS TCP connections may not respect the
+timeout on affected platforms.
+
+=back
+
+=head3 API Specification
+
+=head4 Input
+
+    # Params::Validate::Strict compatible specification
+    {
+        timeout => {
+            type     => SCALAR,
+            regex    => qr/^\d+$/,
+            optional => 1,
+            default  => 10,
+        },
+        trusted_relays => {
+            type     => ARRAYREF,
+            optional => 1,
+            default  => [],
+            # Each element: exact IPv4 address or CIDR in the form a.b.c.d/n
+            # where n is an integer in the range 0..32
+        },
+        verbose => {
+            type     => SCALAR,
+            regex    => qr/^[01]$/,
+            optional => 1,
+            default  => 0,
+        },
+    }
+
+=head4 Output
+
+    # Return::Set compatible specification
+    {
+        type  => 'Mail::Message::Abuse',  # blessed object
+        isa   => 'Mail::Message::Abuse',
+
+        # Guaranteed slots on the returned object (public API):
+        #   timeout        => non-negative integer
+        #   trusted_relays => arrayref of strings
+        #   verbose        => 0 or 1
+        #
+        # All other slots are private (_raw, _headers, etc.) and
+        # must not be accessed or modified by the caller.
+    }
+
 =cut
+
 
 sub new {
     my ($class, %opts) = @_;
@@ -438,7 +594,7 @@ clues extracted from the email headers.  Each entry has:
     {
         header => 'X-PHP-Originating-Script',
         value  => '1000:newsletter.php',
-        note   => 'PHP script on shared hosting — report to hosting abuse team',
+        note   => 'PHP script on shared hosting - report to hosting abuse team',
     }
 
 Headers examined: C<X-Mailer>, C<User-Agent>, C<X-PHP-Originating-Script>,
@@ -520,7 +676,7 @@ red flags found in the message:
             { severity => 'MEDIUM', flag => 'residential_sending_ip',
               detail => 'rDNS 120-88-161-249.tpgi.com.au looks like a broadband line' },
             { severity => 'MEDIUM', flag => 'url_shortener',
-              detail => 'bit.ly used — real destination hidden' },
+              detail => 'bit.ly used - real destination hidden' },
             ...
         ],
     }
@@ -705,7 +861,7 @@ sub risk_assessment {
         $bare =~ s/^www\.//;
         if ($URL_SHORTENERS{$bare} && !$shortener_seen{$bare}++) {
             $flag->('MEDIUM', 'url_shortener',
-                "$u->{host} is a URL shortener — the real destination is hidden");
+                "$u->{host} is a URL shortener - the real destination is hidden");
         }
         # HTTP not HTTPS
         if ($u->{url} =~ m{^http://}i && !$url_host_seen{ $u->{host} }++) {
@@ -888,14 +1044,14 @@ receive an abuse report, in priority order:
 
 Roles produced (in order):
 
-  Sending ISP            — network owner of the originating IP
-  URL host               — network owner of each unique web-server IP
-  Mail host (MX)         — network owner of the domain's MX record IP
-  DNS host (NS)          — network owner of the authoritative NS IP
-  Domain registrar       — registrar abuse contact from domain WHOIS
-  Account provider       — e.g. Gmail / Outlook for the From:/Sender: account
-  DKIM signer            — the organisation whose key signed the message
-  ESP / bulk sender      — identified via List-Unsubscribe: domain
+  Sending ISP            - network owner of the originating IP
+  URL host               - network owner of each unique web-server IP
+  Mail host (MX)         - network owner of the domain's MX record IP
+  DNS host (NS)          - network owner of the authoritative NS IP
+  Domain registrar       - registrar abuse contact from domain WHOIS
+  Account provider       - e.g. Gmail / Outlook for the From:/Sender: account
+  DKIM signer            - the organisation whose key signed the message
+  ESP / bulk sender      - identified via List-Unsubscribe: domain
 
 Addresses are deduplicated so the same address never appears twice,
 even if it is discovered through multiple routes.
@@ -1314,8 +1470,8 @@ sub _split_message {
 
     # ---- Sending software fingerprints ----
     my %sw_notes = (
-        'x-php-originating-script' => 'PHP script on shared hosting — report to hosting abuse team',
-        'x-source'                 => 'Source file on shared hosting — report to hosting abuse team',
+        'x-php-originating-script' => 'PHP script on shared hosting - report to hosting abuse team',
+        'x-source'                 => 'Source file on shared hosting - report to hosting abuse team',
         'x-source-host'            => 'Sending hostname injected by shared hosting provider',
         'x-source-args'            => 'Command-line args injected by shared hosting provider',
         'x-mailer'                 => 'Email client or bulk-mailer identifier',
