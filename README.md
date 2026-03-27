@@ -58,18 +58,6 @@ and answers the questions abuse investigators ask:
     - DNS nameserver operator (NS record -> RDAP)
     - Whether the domain was recently registered (potential flag)
 
-# REQUIRED MODULES
-
-    Net::DNS
-    LWP::UserAgent
-    HTML::LinkExtor
-    Socket
-    IO::Socket::INET
-    MIME::QuotedPrint  (core since Perl 5.8)
-    MIME::Base64       (core since Perl 5.8)
-
-All are available from CPAN.
-
 # METHODS
 
 ## new( %options )
@@ -2489,7 +2477,241 @@ malformed messages.
 
 ## report()
 
+### Purpose
+
 Returns a formatted plain-text abuse report.
+
+Produces a comprehensive, analyst-facing plain-text report covering all
+findings from every analysis method.  It is the single-document summary
+of everything the module knows about a message: envelope fields, risk
+assessment, originating host, sending software, received chain tracking
+IDs, embedded URLs grouped by hostname, contact domain intelligence, and
+the recommended abuse contacts.
+
+Use `report()` when you want a human-readable document for review,
+logging, or a ticketing system.  Use `abuse_report_text()` when you want
+a compact string to transmit to an ISP abuse desk.
+
+### Usage
+
+    $analyser->parse_email($raw);
+    my $text = $analyser->report();
+    print $text;
+
+    # Write to a file
+    open my $fh, '>', 'report.txt' or die $!;
+    print $fh $analyser->report();
+    close $fh;
+
+    # Log the risk level line from the report
+    my ($level_line) = $analyser->report() =~ /(\[ RISK ASSESSMENT: [^\]]+\])/;
+    $logger->info($level_line);
+
+    # Check idempotency -- safe to call multiple times
+    my $r1 = $analyser->report();
+    my $r2 = $analyser->report();
+    # $r1 eq $r2 is always true for the same parsed message
+
+### Arguments
+
+None.  `parse_email()` must have been called first.
+
+### Returns
+
+A plain scalar string containing the full report, newline-terminated,
+using Unix line endings (`\n`) throughout.  The string is never empty;
+it always contains at least the header banner and envelope summary section.
+
+The report is structured as nine sections separated by blank lines, in
+this fixed order:
+
+- 1. Banner
+
+        ========================================================================
+          Mail::Message::Abuse Report  (vX.XX)
+        ========================================================================
+
+    A row of 72 equals signs, the module name and version number, and a
+    closing row of 72 equals signs.
+
+- 2. Envelope summary
+
+    Up to six header fields, each decoded from MIME encoded-words where
+    applicable.  If a field was encoded, the decoded form is shown first
+    followed by the raw encoded original in brackets:
+
+        From           : PayPal Security <phish@evil.example>
+        Reply-to       : Replies <harvest@collector.example>
+        Return-path    : <phish@evil.example>
+        Subject        : Account Alert  [encoded: =?UTF-8?B?QWNjb3VudA==?=]
+        Date           : Mon, 01 Jan 2024 00:00:00 +0000
+        Message-id     : <msg001@evil.example>
+
+    Fields examined (in order): `From:`, `Reply-To:`, `Return-Path:`,
+    `Subject:`, `Date:`, `Message-ID:`.  Fields not present in the message
+    are silently omitted.
+
+- 3. Risk assessment
+
+        [ RISK ASSESSMENT: HIGH (score: 11) ]
+          [HIGH] firmluminary.com was registered 2025-09-01 (less than 180 days ago)
+          [MEDIUM] rDNS 120-88-161-249.tpgi.com.au looks like a broadband/residential line
+          ...
+
+    Or, when no flags were raised:
+
+        [ RISK ASSESSMENT: INFO (score: 0) ]
+          (no specific red flags detected)
+
+    Each flag is shown as `[SEVERITY] detail-string`.
+
+- 4. Originating host
+
+        [ ORIGINATING HOST ]
+          IP           : 120.88.161.249
+          Reverse DNS  : 120-88-161-249.tpgi.com.au
+          Country      : AU
+          Organisation : TPG Telecom Limited
+          Abuse addr   : abuse@tpg.com.au
+          Confidence   : high
+          Note         : First external hop in Received: chain
+
+    Or `(could not determine originating IP)` if `originating_ip()` returns
+    `undef`.  Fields with no value are omitted.
+
+- 5. Sending software (omitted entirely if no software headers found)
+
+        [ SENDING SOFTWARE / INFRASTRUCTURE CLUES ]
+          x-php-originating-script : 1000:mailer.php
+          Note           : PHP script on shared hosting -- report to hosting abuse team
+
+    One block per detected header, with its note.
+
+- 6. Received chain tracking IDs (omitted if no hops have id or for fields)
+
+        [ RECEIVED CHAIN TRACKING IDs ]
+          (Supply these to the relevant ISP abuse team to trace the session)
+
+          IP           : 91.198.174.5
+          Envelope for : victim@bandsman.co.uk
+          Server ID    : ABC123XYZ
+
+    Only hops that have at least one of a session ID (`id`) or envelope
+    recipient (`for`) are shown; IP-only hops are suppressed.  Oldest hop
+    first.
+
+- 7. Embedded HTTP/HTTPS URLs
+
+        [ EMBEDDED HTTP/HTTPS URLs ]
+          Host         : bit.ly  *** URL SHORTENER - real destination hidden ***
+          IP           : 67.199.248.11
+          Country      : US
+          Organisation : Bit.ly LLC
+          Abuse addr   : abuse@bit.ly
+          URL          : https://bit.ly/scam123
+
+    URLs are grouped by hostname; if multiple URLs share a hostname, all
+    paths are listed together under the single host block.  Known URL
+    shorteners are annotated inline.  Shown as `(none found)` when the
+    body contains no HTTP/HTTPS URLs.
+
+- 8. Contact / reply-to domains
+
+        [ CONTACT / REPLY-TO DOMAINS ]
+          Domain       : firmluminary.com
+          Found in     : From: header
+          *** WARNING: RECENTLY REGISTERED - possible phishing domain ***
+          Registered   : 2025-09-01
+          Expires      : 2026-09-01
+          Registrar    : GoDaddy.com LLC
+          Reg. abuse   : abuse@godaddy.com
+          Web host IP  : 104.21.30.10
+          Web host org : Cloudflare Inc
+          Web abuse    : abuse@cloudflare.com
+          MX host      : mail.firmluminary.com
+          MX IP        : 198.51.100.5
+          MX org       : Hosting Corp
+          MX abuse     : abuse@hostingcorp.example
+          NS host      : ns1.cloudflare.com
+          NS IP        : 173.245.58.51
+          NS org       : Cloudflare Inc
+          NS abuse     : abuse@cloudflare.com
+
+    One block per domain from `mailto_domains()`.  Recently-registered
+    domains receive an inline warning banner.  Shown as `(none found)`
+    when no qualifying contact domains are present.
+
+- 9. Where to send abuse reports
+
+        [ WHERE TO SEND ABUSE REPORTS ]
+          Role         : Sending ISP
+          Send to      : abuse@tpg.com.au
+          Note         : Network owner of originating IP 120.88.161.249 (TPG Telecom)
+          Discovered   : ip-whois
+
+          Role         : Domain registrar for firmluminary.com
+          Send to      : abuse@godaddy.com
+          Note         : Registrar: GoDaddy.com LLC
+          Discovered   : domain-whois
+
+    One block per contact from `abuse_contacts()`.  Shown as
+    `(no abuse contacts could be determined)` when the list is empty.
+
+The report ends with a closing row of 72 equals signs.
+
+### Side Effects
+
+Calls `risk_assessment()`, `originating_ip()`, `sending_software()`,
+`received_trail()`, `embedded_urls()`, `mailto_domains()`, and
+`abuse_contacts()` if they have not already run on the current message,
+performing all associated network I/O as documented in those methods.  All
+underlying results are cached; the report text itself is not cached, but
+re-computation is inexpensive since the data is already available.
+
+### Notes
+
+- The report is idempotent: calling `report()` multiple times on the same
+object always returns an identical string, because all underlying methods
+are cached.
+- MIME encoded-words in the `From:`, `Subject:`, and other displayed
+headers are decoded for readability.  When a header was encoded, both the
+decoded form and the raw encoded original are shown, so the report is
+useful both for human reading and for log parsing.
+- URL hosts in section 7 are grouped by hostname and shown in first-seen
+order.  Multiple URLs on the same host are listed together rather than
+repeating the host's IP and WHOIS information, keeping the output compact
+even when a message contains dozens of tracking-pixel and click-redirect
+URLs all on the same CDN.
+- The received-trail section (section 6) filters out hops that have only an
+IP address and no `id` or `for` clause.  The full unfiltered trail is
+available via `received_trail()`.
+- Section 5 (sending software) and section 6 (received chain tracking IDs)
+are entirely omitted -- no heading, no placeholder text -- when no relevant
+headers are present.  All other sections always appear, using a
+`(none found)` or equivalent placeholder when their data is empty.
+- The version number in the banner is the value of `$Mail::Message::Abuse::VERSION`
+at the time `report()` is called.
+
+### API Specification
+
+#### Input
+
+    # Params::Validate::Strict compatible specification
+    # No arguments.
+    []
+
+#### Output
+
+    # Return::Set compatible specification
+    {
+        type  => SCALAR,
+        # Non-empty plain-text string, newline-terminated (\n).
+        # Always defined; never undef.
+        # Line endings: Unix LF (\n) only.
+        # Structure: nine fixed sections in the order documented above,
+        #            separated by blank lines, framed by 72-character
+        #            equals-sign banners.
+    }
 
 # AUTHOR
 
