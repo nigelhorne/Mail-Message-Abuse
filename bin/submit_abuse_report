@@ -97,8 +97,7 @@ if (@ARGV) {
     $raw = <STDIN>;
 }
 
-die basename($0), ": no email data supplied."
-    unless defined $raw && length $raw;
+die basename($0), ': no email data supplied' unless defined $raw && length $raw;
 
 # -----------------------------------------------------------------------
 # Analyse
@@ -230,7 +229,7 @@ sub _send_report {
         "Content-Type: text/plain; charset=UTF-8",
         "Content-Transfer-Encoding: 8bit",
         "X-Mailer: Email::Abuse::Investigator submit_abuse_report",
-        "",
+        '',
         $a{body};
 
     my $smtp = eval {
@@ -242,7 +241,7 @@ sub _send_report {
     };
 
     unless ($smtp) {
-        warn "SMTP connect to $a{smtp_host}:$a{smtp_port} failed: $@\n";
+        warn "SMTP connect to $a{smtp_host}:$a{smtp_port} failed: $@";
         return 0;
     }
 
@@ -256,14 +255,14 @@ sub _send_report {
         1;
     };
 
-    unless ($ok) {
-        my $err = $@ || 'unknown SMTP error';
-        $err =~ s/\s+$//;
-        warn "SMTP error sending to $a{to}: $err\n";
-        return 0;
-    }
+	unless ($ok) {
+		my $err = $@ || 'unknown SMTP error';
+		$err =~ s/\s+$//;
+		warn "SMTP error sending to $a{to}: $err";
+		return 0;
+	}
 
-    return 1;
+	return 1;
 }
 
 # -----------------------------------------------------------------------
