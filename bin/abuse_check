@@ -48,15 +48,15 @@ print $analyser->report();
 my @contacts = $analyser->abuse_contacts();
 if (@contacts) {
 	print "\n";
-	print "=" x 72, "\n";
+	print '=' x 72, "\n";
 	print "  ABUSE REPORT TEXT (send this to each contact below)\n";
-	print "=" x 72, "\n\n";
+	print '=' x 72, "\n\n";
 	print $analyser->abuse_report_text();
 
 	print "\n";
-	print "=" x 72, "\n";
+	print '=' x 72, "\n";
 	print "  SEND TO:\n";
-	print "=" x 72, "\n";
+	print '=' x 72, "\n";
 	for my $c (@contacts) {
 		printf "  %-45s  %s\n", $c->{address}, $c->{role};
 	}
