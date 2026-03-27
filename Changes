@@ -1,7 +1,32 @@
 Revision history for Email-Abuse-Investigator
 
+0.03
+  - Fixed spurious abuse reports being sent to the registrar or ISP of the
+    message recipient.  Bulk mailers routinely embed the recipient's email
+    address in the message body (personalisation footers, unsubscribe
+    confirmations, "this email was sent to you@example.com" lines).
+    _extract_and_analyse_domains() was collecting domains from the body
+    without first excluding the To: and Cc: recipients, causing innocent
+    parties to receive abuse reports.  The To:, Cc:, and Received: "for"
+    envelope-recipient domains are now built into an exclusion set --
+    including their registrable eTLD+1 parents -- before any body or header
+    scanning takes place.
+
+  - The --dry-run output of submit_abuse_report.pl now appends a compact
+    recipient summary at the foot of the report:
+
+        Total: 2 recipients
+
+          abuse@tpg.com.au (Sending ISP)
+          abuse@godaddy.com (Domain registrar for firmluminary.com)
+
+    Previously only the count was shown.  The summary allows a user to
+    confirm at a glance who would receive reports without scrolling back
+    through the full numbered table.
+
+
 0.02	Fri Mar 27 19:04:37 EDT 2026
-	- Added bin/submit_abuse_report
+  - Added bin/submit_abuse_report
 
 0.01	Fri Mar 27 14:23:09 EDT 2026
         First draft

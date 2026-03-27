@@ -4365,11 +4365,39 @@ sub _extract_and_analyse_domains {
     my %seen;
     my @domains_with_source;
 
+    # Build a set of recipient domains to exclude from analysis.
+    # The To: and Cc: headers identify the message recipients -- the victims,
+    # not the senders.  Their domains must never be reported as abuse targets,
+    # even though bulk mailers routinely embed the recipient's address in the
+    # message body (personalisation footers, unsubscribe confirmations, etc.).
+    # We also exclude domains found in Received: "for" clauses for the same
+    # reason.  Exclusion is by registrable eTLD+1 so that sub.victim.com and
+    # victim.com are both excluded when victim.com is in To:.
+    my %recipient_domains;
+    for my $hname (qw(to cc)) {
+        my $val = $self->_header_value($hname) // next;
+        for my $dom ($self->_domains_from_text($val)) {
+            my $reg = _registrable($dom) // $dom;
+            $recipient_domains{$dom}++;
+            $recipient_domains{$reg}++;
+        }
+    }
+    # Also exclude domains extracted from Received: "for" envelope recipients
+    for my $hop (@{ $self->{_rcvd_tracking} }) {
+        next unless $hop->{for} && $hop->{for} =~ /\@([\w.-]+)/;
+        my $dom = lc $1;
+        my $reg = _registrable($dom) // $dom;
+        $recipient_domains{$dom}++;
+        $recipient_domains{$reg}++;
+    }
+
     my $record = sub {
         my ($dom, $source) = @_;
         $dom = lc $dom;
         $dom =~ s/\.$//;
         return if $TRUSTED_DOMAINS{$dom};
+        return if $recipient_domains{$dom};
+        return if $recipient_domains{ _registrable($dom) // $dom };
         return if $seen{$dom}++;
         push @domains_with_source, { domain => $dom, source => $source };
     };

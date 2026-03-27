@@ -1276,4 +1276,79 @@ subtest 'risk_assessment -- missing_date raised when no Date: header' => sub {
     restore_net();
 };
 
+
+# =============================================================================
+# 29. Recipient domain exclusion -- To: domain must never be reported
+# =============================================================================
+
+subtest 'mailto_domains -- To: domain excluded (recipient is the victim, not sender)' => sub {
+    # Regression test for the compliance4alllearning.com scenario:
+    # bulk mailer embeds the recipient address in the body; the recipient's
+    # registrar/ISP must not receive an abuse report.
+    null_net();
+    my $a = new_ok('Email::Abuse::Investigator');
+    $a->parse_email(make_email(
+        from        => 'Bulk Sender <info@campaign.spammer.example>',
+        return_path => '<bounce@bounce.spammer.example>',
+        to          => '<victim@vainc.com>',
+        body        => "This email was sent to victim\@vainc.com
+Visit http://click.spammer.example/",
+    ));
+    {
+        no warnings 'redefine';
+        local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+        local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+        my @domains = map { $_->{domain} } $a->mailto_domains();
+        ok !scalar(grep { /vainc/ } @domains),
+            'vainc.com (To: recipient domain) not included in mailto_domains';
+        ok scalar(grep { /spammer/ } @domains),
+            'spammer.example (sender domain) still captured';
+    }
+    restore_net();
+};
+
+subtest 'mailto_domains -- Cc: domain also excluded' => sub {
+    null_net();
+    my $a = new_ok('Email::Abuse::Investigator');
+    $a->parse_email(make_email(
+        from        => 'Spammer <spam@spammer.example>',
+        return_path => '<bounce@spammer.example>',
+        to          => '<victim@victim.example>',
+        body        => "Cc recipient was also\@cc-victim.example",
+    ));
+    # Inject a Cc: header directly
+    push @{ $a->{_headers} }, { name => 'cc', value => '<other@cc-victim.example>' };
+    $a->{_mailto_domains} = undef;
+    {
+        no warnings 'redefine';
+        local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+        local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+        my @domains = map { $_->{domain} } $a->mailto_domains();
+        ok !scalar(grep { /cc-victim/ } @domains),
+            'cc-victim.example (Cc: recipient domain) not included in mailto_domains';
+    }
+    restore_net();
+};
+
+subtest 'mailto_domains -- subdomain of recipient domain also excluded' => sub {
+    # If To: is victim\@vainc.com, sub.vainc.com appearing in body is also excluded
+    null_net();
+    my $a = new_ok('Email::Abuse::Investigator');
+    $a->parse_email(make_email(
+        from        => 'Spammer <spam@spammer.example>',
+        return_path => '<bounce@spammer.example>',
+        to          => '<victim@vainc.com>',
+        body        => "Your account at webmail.vainc.com has been updated",
+    ));
+    {
+        no warnings 'redefine';
+        local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+        local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+        my @domains = map { $_->{domain} } $a->mailto_domains();
+        ok !scalar(grep { /vainc/ } @domains),
+            'webmail.vainc.com (subdomain of To: recipient) also excluded';
+    }
+    restore_net();
+};
+
 done_testing();
