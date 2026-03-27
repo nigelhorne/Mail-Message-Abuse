@@ -1,4 +1,5 @@
 bin/example_abuse_check
+Changes
 cpanfile
 lib/Mail/Message/Abuse.pm
 LICENSE
@@ -13,4 +14,5 @@ t/eol.t
 t/extended_tests.t
 t/function.t
 t/integration.t
+t/kwalitee.t
 t/unit.t

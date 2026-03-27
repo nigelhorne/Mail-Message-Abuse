@@ -33,6 +33,7 @@ WriteMakefile(
 		'Object::Configure' => 0,
 		'Params::Get' => 0,
 		'Params::Validate::Strict' => 0,
+		'Params::Validate::Strict' => 0,
 		'Socket' => 0,
 	}, TEST_REQUIRES => {
 		'FindBin' => 0,
