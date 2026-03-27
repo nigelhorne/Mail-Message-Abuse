@@ -62,8 +62,6 @@ and answers the questions abuse investigators ask:
 
 ## new( %options )
 
-### Purpose
-
 Constructs and returns a new `Email::Abuse::Investigator` analyser object.  The
 object is stateless until `parse_email()` is called; all analysis results
 are stored on the object and retrieved via the public accessor methods
@@ -198,8 +196,6 @@ timeout on affected platforms.
     }
 
 ## parse\_email( $text )
-
-### Purpose
 
 Feeds a raw RFC 2822 email message to the analyser and prepares it for
 subsequent interrogation.  This is the only method that must be called
@@ -348,8 +344,6 @@ prevents malformed spam from causing exceptions during analysis.
     }
 
 ## originating\_ip()
-
-### Purpose
 
 Identifies the IP address of the machine that originally injected the
 message into the mail system, as opposed to any intermediate relay that
@@ -580,8 +574,6 @@ for the unknown case: `$orig->{abuse} eq '(unknown)'`.
 
 ## embedded\_urls()
 
-### Purpose
-
 Extracts every HTTP and HTTPS URL from the message body and enriches each
 one with the hosting IP address, network organisation name, abuse contact,
 and country code of the web server it points to.
@@ -803,8 +795,6 @@ position it was first seen).
     # Empty list when no HTTP/HTTPS URLs are present in the body.
 
 ## mailto\_domains()
-
-### Purpose
 
 Identifies every domain associated with the message as a contact, reply,
 or delivery address, then runs a full intelligence pipeline on each one to
@@ -1160,8 +1150,6 @@ before truncation, so truncation does not affect the structured fields.
 
 ## all\_domains()
 
-### Purpose
-
 Returns the union of every registrable domain seen anywhere in the message:
 URL hosts from `embedded_urls()` and contact domains from
 `mailto_domains()`, collapsed to their registrable eTLD+1 form and
@@ -1303,8 +1291,6 @@ called afterwards to retrieve their full detail.
     # Empty list when the message contains no URLs and no contact domains.
 
 ## sending\_software()
-
-### Purpose
 
 Returns information extracted from headers that identify the software or
 server-side infrastructure used to compose or inject the message.  These
@@ -1508,8 +1494,6 @@ begins with `x-`.
 
 ## received\_trail()
 
-### Purpose
-
 Returns the per-hop tracking data extracted from the `Received:` header
 chain: the IP address, envelope recipient address, and server-assigned
 session ID for each relay that handled the message.
@@ -1701,8 +1685,6 @@ newlines.
     # any extractable data.
 
 ## risk\_assessment()
-
-### Purpose
 
 Evaluates the message against a set of heuristic checks and returns an
 overall risk level, a weighted numeric score, and a list of every specific
@@ -2044,8 +2026,6 @@ malformed message, `risk_assessment()` returns a valid hashref with
 
 ## abuse\_report\_text()
 
-### Purpose
-
 Produces a compact, plain-text string intended to be sent as the body of
 an abuse report email to an ISP or hosting provider.  It summarises the
 risk level, lists every red flag with its detail, identifies the originating
@@ -2197,8 +2177,6 @@ header section will be blank.  The method will not die.
     }
 
 ## abuse\_contacts()
-
-### Purpose
 
 Collates the complete set of parties that should receive an abuse report
 for this message: the ISP that owns the sending IP, the operators of every
@@ -2476,8 +2454,6 @@ malformed messages.
     # Empty list when no actionable abuse contacts can be determined.
 
 ## report()
-
-### Purpose
 
 Returns a formatted plain-text abuse report.
 

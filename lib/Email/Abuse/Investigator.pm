@@ -232,8 +232,6 @@ C<Message-ID:> domain.  For each unique domain it gathers:
 
 =head2 new( %options )
 
-=head3 Purpose
-
 Constructs and returns a new C<Email::Abuse::Investigator> analyser object.  The
 object is stateless until C<parse_email()> is called; all analysis results
 are stored on the object and retrieved via the public accessor methods
@@ -437,8 +435,6 @@ sub new {
 
 =head2 parse_email( $text )
 
-=head3 Purpose
-
 Feeds a raw RFC 2822 email message to the analyser and prepares it for
 subsequent interrogation.  This is the only method that must be called
 before any other public method; all analysis is driven by the message
@@ -635,8 +631,6 @@ sub parse_email {
 }
 
 =head2 originating_ip()
-
-=head3 Purpose
 
 Identifies the IP address of the machine that originally injected the
 message into the mail system, as opposed to any intermediate relay that
@@ -920,8 +914,6 @@ sub originating_ip {
 
 =head2 embedded_urls()
 
-=head3 Purpose
-
 Extracts every HTTP and HTTPS URL from the message body and enriches each
 one with the hosting IP address, network organisation name, abuse contact,
 and country code of the web server it points to.
@@ -1187,8 +1179,6 @@ sub embedded_urls {
 
 
 =head2 mailto_domains()
-
-=head3 Purpose
 
 Identifies every domain associated with the message as a contact, reply,
 or delivery address, then runs a full intelligence pipeline on each one to
@@ -1590,8 +1580,6 @@ sub mailto_domains {
 
 =head2 all_domains()
 
-=head3 Purpose
-
 Returns the union of every registrable domain seen anywhere in the message:
 URL hosts from C<embedded_urls()> and contact domains from
 C<mailto_domains()>, collapsed to their registrable eTLD+1 form and
@@ -1788,8 +1776,6 @@ sub all_domains {
 }
 
 =head2 sending_software()
-
-=head3 Purpose
 
 Returns information extracted from headers that identify the software or
 server-side infrastructure used to compose or inject the message.  These
@@ -2027,8 +2013,6 @@ sub sending_software {
 
 
 =head2 received_trail()
-
-=head3 Purpose
 
 Returns the per-hop tracking data extracted from the C<Received:> header
 chain: the IP address, envelope recipient address, and server-assigned
@@ -2269,8 +2253,6 @@ sub received_trail {
 }
 
 =head2 risk_assessment()
-
-=head3 Purpose
 
 Evaluates the message against a set of heuristic checks and returns an
 overall risk level, a weighted numeric score, and a list of every specific
@@ -2900,8 +2882,6 @@ sub risk_assessment {
 
 =head2 abuse_report_text()
 
-=head3 Purpose
-
 Produces a compact, plain-text string intended to be sent as the body of
 an abuse report email to an ISP or hosting provider.  It summarises the
 risk level, lists every red flag with its detail, identifies the originating
@@ -3123,8 +3103,6 @@ sub abuse_report_text {
 }
 
 =head2 abuse_contacts()
-
-=head3 Purpose
 
 Collates the complete set of parties that should receive an abuse report
 for this message: the ISP that owns the sending IP, the operators of every
@@ -3606,8 +3584,6 @@ sub abuse_contacts {
 }
 
 =head2 report()
-
-=head3 Purpose
 
 Returns a formatted plain-text abuse report.
 
