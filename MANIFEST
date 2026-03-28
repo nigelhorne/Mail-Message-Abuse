@@ -1,4 +1,5 @@
-bin/example_abuse_check
+bin/abuse_check
+bin/submit_abuse_report
 Changes
 cpanfile
 lib/Email/Abuse/Investigator.pm
