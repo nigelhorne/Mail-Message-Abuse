@@ -2312,5 +2312,247 @@ subtest 'abuse_contacts role merging -- first address not dropped when duplicate
 	restore_net();
 };
 
-done_testing();
 
+# =============================================================================
+# 40. Regression: form_contacts() and web-form provider table entries (0.06)
+# =============================================================================
+
+subtest 'form_contacts -- markmonitor.com in provider table with form key' => sub {
+	my $a = new_ok('Email::Abuse::Investigator');
+	my $pa = $a->_provider_abuse_for_host('markmonitor.com');
+	ok defined $pa,
+		'markmonitor.com found in provider table';
+	ok !$pa->{email},
+		'markmonitor.com has no email key (form-only)';
+	ok $pa->{form},
+		'markmonitor.com has form key';
+	like $pa->{form}, qr{markmonitor\.com},
+		'form URL references markmonitor.com';
+	ok $pa->{form_paste},
+		'markmonitor.com has form_paste hint';
+	ok $pa->{form_upload},
+		'markmonitor.com has form_upload hint';
+};
+
+subtest 'form_contacts -- globaldomaingroup.com in provider table with form key' => sub {
+	my $a = new_ok('Email::Abuse::Investigator');
+	my $pa = $a->_provider_abuse_for_host('globaldomaingroup.com');
+	ok defined $pa,
+		'globaldomaingroup.com found in provider table';
+	ok !$pa->{email},
+		'globaldomaingroup.com has no email key (form-only)';
+	ok $pa->{form},
+		'globaldomaingroup.com has form key';
+	like $pa->{form}, qr{globaldomaingroup\.com},
+		'form URL references globaldomaingroup.com';
+};
+
+subtest 'form_contacts -- markmonitor.com not returned by abuse_contacts()' => sub {
+	# form-only entries must never appear in abuse_contacts() since they
+	# have no email address -- the $add guard filters them out.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		body => 'Buy now at https://spamsite.example/offer',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_analyse_domain = sub {
+			my ($self, $dom) = @_;
+			return $self->{_domain_info}{$dom}
+				if $self->{_domain_info}{$dom};
+			my %info = (
+				registrar       => 'MarkMonitor Inc.',
+				registrar_abuse => 'abusecomplaints@markmonitor.com',
+			);
+			$self->{_domain_info}{$dom} = \%info;
+			return \%info;
+		};
+
+		my @contacts = $a->abuse_contacts();
+		my @mm = grep { ($_->{address} // '') =~ /markmonitor/i } @contacts;
+		is scalar(@mm), 0,
+			'markmonitor.com does not appear in abuse_contacts() (no email)';
+	}
+	restore_net();
+};
+
+subtest 'form_contacts -- registrar with form key appears in form_contacts()' => sub {
+	# When WHOIS identifies markmonitor.com as the registrar, form_contacts()
+	# must return it with the correct form URL and hints.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		body => 'Buy now at https://spamsite.example/offer',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_analyse_domain = sub {
+			my ($self, $dom) = @_;
+			return $self->{_domain_info}{$dom}
+				if $self->{_domain_info}{$dom};
+			my %info = (
+				registrar       => 'MarkMonitor Inc.',
+				registrar_abuse => 'abusecomplaints@markmonitor.com',
+			);
+			$self->{_domain_info}{$dom} = \%info;
+			return \%info;
+		};
+
+		my @fcs = $a->form_contacts();
+		my ($mm) = grep { $_->{form} =~ /markmonitor/i } @fcs;
+
+		ok defined $mm,
+			'markmonitor.com form contact present in form_contacts()';
+		like $mm->{role}, qr/registrar/i,
+			'role identifies this as a registrar contact';
+		like $mm->{form}, qr{markmonitor\.com},
+			'form URL is the MarkMonitor abuse form';
+		ok $mm->{form_paste},
+			'form_paste hint present';
+		ok $mm->{form_upload},
+			'form_upload hint present';
+		is $mm->{via}, 'provider-table',
+			'via is provider-table';
+	}
+	restore_net();
+};
+
+subtest 'form_contacts -- registrar_abuse domain drives lookup (self-extending)' => sub {
+	# The lookup must be driven by the domain in registrar_abuse, not a
+	# hardcoded list.  Use globaldomaingroup.com to verify the mechanism
+	# works for a second provider independently.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		body => 'Visit https://scamdomain.example/go',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_analyse_domain = sub {
+			my ($self, $dom) = @_;
+			return $self->{_domain_info}{$dom}
+				if $self->{_domain_info}{$dom};
+			my %info = (
+				registrar       => 'Global Domain Group',
+				registrar_abuse => 'abuse@globaldomaingroup.com',
+			);
+			$self->{_domain_info}{$dom} = \%info;
+			return \%info;
+		};
+
+		my @fcs = $a->form_contacts();
+		my ($gdg) = grep { $_->{form} =~ /globaldomaingroup/i } @fcs;
+
+		ok defined $gdg,
+			'globaldomaingroup.com form contact found via registrar_abuse domain';
+		like $gdg->{form}, qr{globaldomaingroup\.com},
+			'correct form URL for Global Domain Group';
+	}
+	restore_net();
+};
+
+subtest 'form_contacts -- form URL deduplicated across multiple domains' => sub {
+	# If two contact domains both have MarkMonitor as registrar, form_contacts()
+	# must return only one entry for the MarkMonitor form, not two.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <spam@domain1.example>',
+		return_path => '<bounce@domain2.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Test body',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_analyse_domain = sub {
+			my ($self, $dom) = @_;
+			return $self->{_domain_info}{$dom}
+				if $self->{_domain_info}{$dom};
+			# Both domains share the same registrar
+			my %info = (
+				registrar       => 'MarkMonitor Inc.',
+				registrar_abuse => 'abusecomplaints@markmonitor.com',
+			);
+			$self->{_domain_info}{$dom} = \%info;
+			return \%info;
+		};
+
+		my @fcs  = $a->form_contacts();
+		my @mm   = grep { $_->{form} =~ /markmonitor/i } @fcs;
+		is scalar(@mm), 1,
+			'MarkMonitor form URL appears only once despite two domains sharing it';
+	}
+	restore_net();
+};
+
+subtest 'form_contacts -- report() includes web-form section when form contacts exist' => sub {
+	# Mock _domain_whois to return MarkMonitor registrar data for any domain.
+	# This is more robust than mocking _analyse_domain because it does not
+	# rely on local() scoping of typeglobs inside nested anonymous subs,
+	# which interacts poorly with make test's test harness.
+	# All network stubs are set before parse_email() so that no cached
+	# state is built up with the wrong stubs active.
+	no warnings 'redefine';
+	local *Email::Abuse::Investigator::_reverse_dns  = sub { undef };
+	local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+	local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+	local *Email::Abuse::Investigator::_rdap_lookup  = sub { {} };
+	local *Email::Abuse::Investigator::_domain_whois = sub {
+		return "Registrar: MarkMonitor Inc.\n"
+		     . "Registrar Abuse Contact Email: abusecomplaints\@markmonitor.com\n";
+	};
+
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		body => 'Buy now at https://spamsite.example/offer',
+	));
+
+	my $report = $a->report();
+	like $report, qr/WHERE TO FILE WEB-FORM REPORTS/,
+		'report() contains web-form section heading';
+	like $report, qr/markmonitor\.com/i,
+		'report() web-form section mentions markmonitor.com';
+	like $report, qr/Form URL\s*:/,
+		'report() web-form section contains Form URL line';
+	like $report, qr/Paste\s*:/,
+		'report() web-form section contains Paste line';
+	like $report, qr/Upload\s*:/,
+		'report() web-form section contains Upload line';
+};
+
+subtest 'form_contacts -- report() omits web-form section when no form contacts' => sub {
+	# When no form-only providers are involved the section must be absent
+	# entirely -- no placeholder text.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		body => 'Visit https://evilblog.wordpress.com/offer',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my $report = $a->report();
+		unlike $report, qr/WHERE TO FILE WEB-FORM REPORTS/,
+			'report() has no web-form section when no form contacts present';
+	}
+	restore_net();
+};
+
+done_testing();

@@ -1,5 +1,60 @@
 Revision history for Email-Abuse-Investigator
 
+0.06
+
+  New features
+
+  - Added form_contacts() public method, parallel to abuse_contacts(), which
+    returns the set of parties that require abuse reports to be submitted via
+    a web form rather than email.  Returns a list of hashrefs each containing
+    the form URL, role, note, and instructions on what to paste and what file
+    to upload.  Providers are identified via a new optional 'form',
+    'form_paste', and 'form_upload' key in %PROVIDER_ABUSE entries.
+
+  - Added MarkMonitor and Global Domain Group to %PROVIDER_ABUSE as
+    form-only entries (no 'email' key).  Both registrars explicitly reject
+    email abuse reports per their autoresponse:
+      markmonitor.com ->
+        https://corp.markmonitor.com/domain/ui/abuse-report
+      globaldomaingroup.com ->
+        https://globaldomaingroup.com/report-abuse
+    The form_paste and form_upload hints in each entry tell the user exactly
+    what to paste into the form and what file to attach.
+
+  - Added [ WHERE TO FILE WEB-FORM REPORTS ] section to report(), appearing
+    after [ WHERE TO SEND ABUSE REPORTS ] when form_contacts() returns
+    results.  Each entry shows the form URL, role, paste instructions
+    (word-wrapped at 66 characters), and upload instructions.
+
+  - Added WEB-FORM REPORTS REQUIRED: block to abuse_report_text() listing
+    form-only contacts with their form URL, paste hint, and upload hint.
+
+  - Added MANUAL ACTION REQUIRED -- WEB FORM SUBMISSION block to the
+    --dry-run footer of submit_abuse_report.pl, listing form-only contacts
+    separately from email recipients so the user knows which parties require
+    manual browser submission.
+
+  Bug fixes / refactoring
+
+  - Fixed abuse_contacts() passing form-only provider addresses (e.g.
+    abusecomplaints@markmonitor.com) through to the email contact list.
+    Such addresses are syntactically valid but explicitly non-functional per
+    the provider's own autoresponse.  The $add closure now checks whether the
+    address domain belongs to a form-only %PROVIDER_ABUSE entry (one with a
+    'form' key but no 'email' key) and suppresses it; the contact is surfaced
+    correctly via form_contacts() instead.
+
+  - Refactored the domain WHOIS fallback in _extract_and_resolve_urls() to
+    call _analyse_domain() instead of the separate _parse_domain_whois_abuse()
+    helper introduced in 0.05.  _analyse_domain() is already cached in
+    $self->{_domain_info}, so when the same spam domain appears in multiple
+    URLs the domain WHOIS is performed only once rather than once per unique
+    hostname.  _parse_domain_whois_abuse() has been removed.
+
+  - Added use utf8; pragma to Investigator.pm so that the em-dash characters
+    in user-facing detail strings are handled correctly under all Perl
+    configurations without relying on the source file's implicit encoding.
+
 0.05	Sat Mar 28 11:52:05 EDT 2026
 
   Bug fixes

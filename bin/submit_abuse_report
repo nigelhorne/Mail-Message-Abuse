@@ -267,6 +267,28 @@ sub _dry_run_report {
     for my $c (@{$contacts}) {
         printf "  %s (%s)\n", $c->{address}, $c->{role};
     }
+
+    # Web-form contacts -- providers that do not accept email
+    my @form_cs = $inv->form_contacts();
+    if (@form_cs) {
+        print "\n$bar\n";
+        print "  MANUAL ACTION REQUIRED -- WEB FORM SUBMISSION\n";
+        print "  The following parties do not accept email abuse reports.\n";
+        print "  Open each URL in a browser and complete the form as instructed.\n";
+        print "$bar\n\n";
+        for my $c (@form_cs) {
+            printf "  Role     : %s\n", $c->{role};
+            printf "  Form URL : %s\n", $c->{form};
+            if ($c->{form_paste}) {
+                printf "  Paste    : %s\n", $c->{form_paste};
+            }
+            if ($c->{form_upload}) {
+                printf "  Upload   : %s\n", $c->{form_upload};
+            }
+            print "\n";
+        }
+    }
+
     print "$bar\n";
 }
 
