@@ -4,6 +4,36 @@ Revision history for Email-Abuse-Investigator
 
   Bug fixes
 
+  - Fixed _extract_and_resolve_urls() discarding the registrar abuse
+    contact for URL hosts that cannot be resolved to an IP at analysis
+    time.  Previously, when _resolve_host() returned undef, _whois_ip()
+    was skipped entirely and the host was recorded with abuse=>'(unknown)',
+    which caused abuse_contacts() to produce no contact for that host even
+    though a domain WHOIS record (and therefore a registrar abuse address)
+    existed.  _extract_and_resolve_urls() now falls back to a domain WHOIS
+    lookup on the registrable parent of the host when the IP WHOIS yields
+    no abuse address.  A new private helper _parse_domain_whois_abuse()
+    performs this lookup without the full overhead of _analyse_domain().
+    Combined with the protocol-relative URL fix above, this means that the
+    badshamart.com spam campaign (PBS Health News / prostate supplement)
+    now correctly produces a registrar abuse contact in abuse_contacts()
+    even though all four badshamart.com URL hosts were unresolvable.
+
+  - Fixed _extract_http_urls() not extracting protocol-relative URLs
+    (scheme-omitted form //domain/path).  These are used in spam messages
+    as tracking pixels and click-redirect links, e.g.:
+      <img src="//badshamart.com/o/2516/19142/347/US" ...>
+    The leading // was not matched by either the https?:// absolute-URL
+    regex or the HTML::LinkExtor filter, which also required a full scheme.
+    Both passes now recognise the //domain form and normalise it to
+    https://domain before adding it to the URL list.  The regex pass
+    anchors the match to whitespace, quotes, or = to avoid false positives
+    on CSS path segments and HTML comments.
+    Discovered via a real spam message (PBS Health News / badshamart.com)
+    where three click-redirect hrefs and one tracking-pixel src all used
+    protocol-relative URLs, causing badshamart.com to be entirely absent
+    from embedded_urls() and therefore from abuse_contacts().
+
   - Fixed duplicate Salesforce Marketing Cloud comment block in
     %PROVIDER_ABUSE.  A leftover comment fragment introduced during 0.03
     appeared immediately before the real Salesforce entries, causing

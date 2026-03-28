@@ -4453,6 +4453,18 @@ sub _extract_and_resolve_urls {
         unless (exists $host_cache{$host}) {
             my $ip    = $self->_resolve_host($host) // '(unresolved)';
             my $whois = $ip ne '(unresolved)' ? $self->_whois_ip($ip) : {};
+
+            # If IP resolution failed or WHOIS returned nothing useful,
+            # fall back to a domain WHOIS lookup on the registrable parent.
+            # This recovers the registrar abuse contact for URL hosts that
+            # are unreachable at analysis time (e.g. freshly-registered
+            # spam domains, or hosts behind protocol-relative URLs).
+            if (!$whois->{abuse}) {
+                my $reg = _registrable($host) // $host;
+                my $dw  = $self->_parse_domain_whois_abuse($reg);
+                $whois  = $dw if $dw->{abuse};
+            }
+
             $host_cache{$host} = {
                 ip      => $ip,
                 org     => $whois->{org}     // '(unknown)',
@@ -4471,23 +4483,38 @@ sub _extract_and_resolve_urls {
 }
 
 sub _extract_http_urls {
-    my ($self, $body) = @_;
-    my @urls;
+	my ($self, $body) = @_;
+	my @urls;
 
-    if ($HAS_HTML_LINKEXTOR) {
-        my $p = HTML::LinkExtor->new(sub {
-            my ($tag, %attrs) = @_;
-            for my $attr (qw(href src action)) {
-                push @urls, $attrs{$attr}
-                    if ($attrs{$attr} // '') =~ m{^https?://}i;
-            }
-        });
-        $p->parse($body);
-    }
+	if ($HAS_HTML_LINKEXTOR) {
+		my $p = HTML::LinkExtor->new(sub {
+			my ($tag, %attrs) = @_;
+			for my $attr (qw(href src action)) {
+				my $val = $attrs{$attr} // '';
+				if ($val =~ m{^https?://}i) {
+					push @urls, $val;
+				} elsif ($val =~ m{^//[\w.-]}) {
+					# Protocol-relative URL (e.g. //example.com/path) --
+					# treat as https:// so the host is extracted and reported.
+					# These are common in tracking pixels and CDN references.
+					push @urls, 'https:' . $val;
+				}
+			}
+		});
+		$p->parse($body);
+	}
 
-    while ($body =~ m{(https?://[^\s<>"'\)\]]+)}gi) {
-        push @urls, $1;
-    }
+	# Absolute URLs
+	while ($body =~ m{(https?://[^\s<>"'\)\]]+)}gi) {
+		push @urls, $1;
+	}
+
+	# Protocol-relative URLs not caught by the structural pass above.
+	# Match // preceded only by whitespace, quote, or = to avoid
+	# false positives on CSS comments (/* ... */) and path segments.
+	while ($body =~ m{(?:^|[\s"'=])(//[\w.-][^\s<>"'\)\]]*)}gim) {
+		push @urls, 'https:' . $1;
+	}
 
 	my %seen;
 	my @all = grep { !$seen{$_}++ } @urls;
@@ -4897,6 +4924,34 @@ sub _domain_whois {
     my ($server) = $iana =~ /whois:\s*([\w.-]+)/i;
     return undef unless $server;
     return $self->_raw_whois($domain, $server);
+}
+
+# _parse_domain_whois_abuse( $domain ) -> hashref
+#
+# Lightweight domain WHOIS lookup that extracts only the registrar name
+# and registrar abuse contact email.  Used as a fallback in
+# _extract_and_resolve_urls() when a URL host cannot be resolved to an IP
+# and therefore _whois_ip() cannot be called.  Returns a hashref with
+# keys 'org' (registrar name) and 'abuse' (registrar abuse email), either
+# of which may be absent if not found in the WHOIS response.  Returns an
+# empty hashref on any WHOIS failure.  Results are not cached.
+sub _parse_domain_whois_abuse {
+	my ($self, $domain) = @_;
+	my $raw = $self->_domain_whois($domain) // return {};
+	my %info;
+	if ($raw =~ /Registrar:\s*(.+)/i) {
+		($info{org} = $1) =~ s/\s+$//;
+	}
+	for my $pat (
+		qr/Registrar Abuse Contact Email:\s*(\S+\@\S+)/i,
+		qr/Abuse Contact Email:\s*(\S+\@\S+)/i,
+		qr/abuse-contact:\s*(\S+\@\S+)/i,
+	) {
+		if (!$info{abuse} && $raw =~ $pat) {
+			($info{abuse} = $1) =~ s/\s+$//;
+		}
+	}
+	return \%info;
 }
 
 sub _rdap_lookup {
