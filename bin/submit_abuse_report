@@ -244,44 +244,28 @@ sub _dry_run_report {
 
     print "\n$bar\n";
 
-    # Merge contacts that share an address so the footer shows one line per
-    # recipient with all roles combined.  This happens when the same provider
-    # is independently identified via multiple routes (e.g. Google is both the
-    # sending ISP and the owner of a blogspot.com URL in the message body).
-    # We preserve insertion order and accumulate roles as they appear.
-    my %seen_addr;   # address -> index into @merged
-    my @merged;      # [{address, roles => [...]}, ...]
-    for my $c (@{$contacts}) {
-        my $addr = $c->{address};
-        if (exists $seen_addr{$addr}) {
-            # Address already listed -- append this role to its entry
-            push @{ $merged[ $seen_addr{$addr} ]{roles} }, $c->{role};
-        } else {
-            # First time we have seen this address -- create a new entry
-            $seen_addr{$addr} = scalar @merged;
-            push @merged, { address => $addr, roles => [ $c->{role} ] };
-        }
-    }
+    # abuse_contacts() now merges duplicate addresses, so @contacts has one
+    # entry per unique address with 'role' already set to the combined string.
+    # Count the total discovery routes (sum of all roles arrays) to show
+    # in the annotation when merging occurred.
+    my $n_contacts = scalar @{$contacts};
+    my $n_routes   = 0;
+    $n_routes += scalar @{ $_->{roles} // [$_->{role}] } for @{$contacts};
 
-    # The total reflects unique addresses (i.e. emails that will be sent).
-    # If roles were merged, note the original contact-route count as well.
-    my $n_unique = scalar @merged;
-    my $n_total  = scalar @{$contacts};
-    if ($n_unique < $n_total) {
-        # Some addresses appeared under more than one role -- explain the merge
+    if ($n_routes > $n_contacts) {
+        # Some addresses cover more than one discovery route -- note the merge
         printf "  Total: %d recipient%s (%d contact route%s merged)\n",
-            $n_unique, $n_unique == 1 ? '' : 's',
-            $n_total,  $n_total  == 1 ? '' : 's';
+            $n_contacts, $n_contacts == 1 ? '' : 's',
+            $n_routes,   $n_routes   == 1 ? '' : 's';
     } else {
         printf "  Total: %d recipient%s\n",
-            $n_unique, $n_unique == 1 ? '' : 's';
+            $n_contacts, $n_contacts == 1 ? '' : 's';
     }
     print "\n";
 
-    # Print one line per unique recipient with roles joined by " and "
-    for my $m (@merged) {
-        my $role_str = join(' and ', @{ $m->{roles} });
-        printf "  %s (%s)\n", $m->{address}, $role_str;
+    # One line per recipient; 'role' is already the merged string
+    for my $c (@{$contacts}) {
+        printf "  %s (%s)\n", $c->{address}, $c->{role};
     }
     print "$bar\n";
 }

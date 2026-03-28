@@ -3162,8 +3162,11 @@ the C<List-Unsubscribe:> header.
 For each party the method produces the role description, the abuse email
 address, a supporting note, and the source of the information.  Addresses
 are deduplicated globally: if the same address is discovered through
-multiple routes (e.g. Cloudflare as both a URL host and a nameserver), it
-appears only once, using the data from the first route that found it.
+multiple routes (e.g. Google as both the sending ISP and the owner of a
+blogspot.com URL in the message body), it appears only once.  The C<role>
+string for that entry is the combined description of all routes that found
+it, joined by C<" and ">, and the C<roles> key holds the individual role
+strings as an arrayref.
 
 This method is designed to be used together with C<abuse_report_text()>:
 iterate over the returned contacts to obtain the list of addresses, and
@@ -3226,18 +3229,25 @@ Roles produced (in order):
 Addresses are deduplicated so the same address never appears twice,
 even if it is discovered through multiple routes.
 
-Each hashref contains exactly four keys, all always present:
+Each hashref contains the following keys, all always present:
 
 =over 4
 
 =item C<role> (string)
 
 A human-readable description of the party's relationship to the message.
-The role string often includes the relevant domain name or IP address
-inline (e.g. C<"Web host of firmluminary.com">,
-C<"Domain registrar for firmluminary.com">,
-C<"Account provider (from: Sender E<lt>spammer@gmail.comE<gt>)">).
+When the same address was found via multiple discovery routes, the role
+strings from each route are joined with C<" and "> (e.g.
+C<"Sending ISP (provider table) and URL host (provider table)">).
 See the Algorithm section for the full set of role string patterns.
+
+=item C<roles> (arrayref of strings)
+
+The individual role strings for each discovery route that found this
+address, in discovery order.  Contains exactly one element when the
+address was found via a single route; two or more elements when multiple
+routes converged on the same address.  The C<role> key is always the
+C<join(' and ', @{$c->{roles}})> of this arrayref.
 
 =item C<address> (string)
 
@@ -3252,11 +3262,12 @@ to request.  For provider-table entries this is the note from the built-in
 table (which may include a URL to a web-based abuse form).  For WHOIS- and
 RDAP-discovered entries this describes the IP block or domain involved.
 Always defined; may be the empty string for entries where no note is
-available.
+available.  When roles are merged, this reflects the note from the first
+discovery route.
 
 =item C<via> (string)
 
-The discovery method.  One of:
+The discovery method for the first route that found this address.  One of:
 
 =over 8
 
@@ -3299,10 +3310,11 @@ do re-execute the collation and deduplication logic.
 =head3 Algorithm: discovery routes
 
 Contacts are discovered through six routes, applied in order.
-Deduplication is global across all routes: once an address is added it
-cannot be added again regardless of which later route also finds it.
-An entry is suppressed entirely if its address is empty, does not contain
-an C<@> sign, or is the sentinel C<'(unknown)'>.
+Deduplication is global across all routes: if an address is found by
+more than one route, a single entry is kept and the role strings from
+every route that found it are accumulated into C<roles> and joined into
+C<role>.  An entry is suppressed entirely if its address is empty, does
+not contain an C<@> sign, or is the sentinel C<'(unknown)'>.
 
 =over 4
 
@@ -3476,13 +3488,31 @@ malformed messages.
 
 sub abuse_contacts {
     my ($self) = @_;
-    my (@contacts, %seen);
+    my (@contacts, %seen_idx);
 
+    # $add records an abuse contact.  If the address has already been seen,
+    # the new role is appended to the existing entry rather than discarded.
+    # This means abuse_contacts() returns one hashref per unique address, with
+    # a 'roles' arrayref carrying every route by which that address was found,
+    # and 'role' (singular) set to the joined string for backward compatibility.
     my $add = sub {
         my (%args) = @_;
         my $addr = lc($args{address} // '');
         return unless $addr && $addr =~ /\@/;
-        return if $seen{$addr}++;
+        if (exists $seen_idx{$addr}) {
+            # Address already present -- merge the new role into the existing entry
+            # rather than dropping it.  This preserves the information that, for
+            # example, Google was identified as both the sending ISP and the URL
+            # host, which is useful context for the abuse report recipient.
+            my $entry = $contacts[ $seen_idx{$addr} ];
+            push @{ $entry->{roles} }, $args{role};
+            # Keep 'role' (singular) in sync for any caller using the old key
+            $entry->{role} = join(' and ', @{ $entry->{roles} });
+            return;
+        }
+        # First time we have seen this address -- record its position and add it
+        $seen_idx{$addr} = scalar @contacts;
+        $args{roles} = [ $args{role} ];   # arrayref for multi-role merging
         push @contacts, \%args;
     };
 

@@ -4,6 +4,26 @@ Revision history for Email-Abuse-Investigator
 
   Bug fixes
 
+  - Fixed abuse_contacts() silently discarding discovery routes that resolve
+    to an address already seen.  When the same abuse address is found via
+    multiple routes (e.g. Google as both the sending ISP via rDNS and the
+    owner of a blogspot.com URL in the body), the second and subsequent
+    roles are now accumulated rather than dropped.  Each hashref in the
+    returned list gains a 'roles' arrayref holding the individual role
+    strings, and 'role' (singular) is set to their join(' and ', ...) for
+    backward compatibility.  The dry-run footer in submit_abuse_report.pl
+    now reflects this: a merged entry shows both roles on one line and the
+    total line reads "N recipients (M contact routes merged)" when merging
+    has occurred.
+
+  - Fixed _decode_multipart() not recursing into nested multipart/* parts.
+    A message with Content-Type: multipart/mixed containing a nested
+    multipart/alternative (a common structure for HTML+plaintext mail) had
+    its body silently discarded, causing embedded_urls() to find no URLs
+    and abuse_contacts() to miss all URL-host contacts.  _decode_multipart()
+    now detects nested multipart/* parts, extracts the inner boundary from
+    the Content-Type header, and recurses to decode the inner container.
+
   - Fixed abuse_contacts() section 4 (account provider lookup) incorrectly
     matching the domain of an @ sign appearing in a display name rather than
     the actual addr-spec.  A From: header of the form:
@@ -20,6 +40,13 @@ Revision history for Email-Abuse-Investigator
     Offsets outside that range, or with a minutes field >= 60, raise this
     flag.  Positive and negative bounds are checked separately; a symmetric
     limit would wrongly accept values such as -1300.
+
+  - Added Blogger/Blogspot and Google Sites to the built-in provider table:
+      blogspot.com       -> abuse@google.com
+      blogger.com        -> abuse@google.com
+      sites.google.com   -> abuse@google.com
+    Blogspot subdomains (e.g. ruseriver.blogspot.com) are handled by the
+    existing subdomain-stripping logic.
 
   - Added ActiveCampaign to the built-in provider table:
       activecampaign.com  -> abuse@activecampaign.com
