@@ -3,6 +3,7 @@ package Email::Abuse::Investigator;
 use strict;
 use warnings;
 
+use utf8;
 use IO::Socket::INET;
 use MIME::QuotedPrint qw( decode_qp );
 use MIME::Base64 qw( decode_base64 );
