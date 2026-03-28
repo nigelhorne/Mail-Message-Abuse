@@ -5144,13 +5144,13 @@ sub _decode_ew {
         # For non-UTF-8 charsets just return the raw bytes — good enough
         # for display-name spoof detection which only needs ASCII matching
     }
-    return $raw;
+	return $raw;
 }
 
 sub _parse_auth_results_cached {
 	my $self = $_[0];
 
-    return $self->{_auth_results} if $self->{_auth_results};
+	return $self->{_auth_results} if $self->{_auth_results};
 
     my %auth;
     my $raw = join('; ',

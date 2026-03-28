@@ -2029,5 +2029,288 @@ subtest 'abuse_contacts -- role deduplication: distinct labels not collapsed' =>
 	restore_net();
 };
 
+
+# =============================================================================
+# 38. Regression: nested multipart/* recursion (0.04 fix)
+#     Before the fix, multipart/mixed containing multipart/alternative had its
+#     inner body silently discarded, so embedded_urls() found no URLs.
+# =============================================================================
+
+subtest 'nested MIME: multipart/mixed > multipart/alternative -- URLs extracted' => sub {
+	# Build a multipart/mixed message whose only text part is wrapped inside
+	# a nested multipart/alternative.  This is the exact structure that was
+	# broken before the 0.04 fix.
+	null_net();
+	my $inner_boundary = 'inner_boundary_001';
+	my $outer_boundary = 'outer_boundary_001';
+
+	my $inner = join("\r\n",
+		"--$inner_boundary",
+		'Content-Type: text/plain; charset=us-ascii',
+		'',
+		'Plain text part with no URL.',
+		"--$inner_boundary",
+		'Content-Type: text/html; charset=us-ascii',
+		'',
+		'<html><body><a href="https://spamlink.badshamart.example/go">click</a></body></html>',
+		"--${inner_boundary}--",
+		'',
+	);
+
+	my $outer_body = join("\r\n",
+		"--$outer_boundary",
+		"Content-Type: multipart/alternative; boundary=\"$inner_boundary\"",
+		'',
+		$inner,
+		"--${outer_boundary}--",
+		'',
+	);
+
+	my $raw = join("\r\n",
+		'Received: from ext (ext [198.51.100.1]) by mx.nigelhorne.com with ESMTP',
+		'From: Spammer <spam@spammer.example>',
+		'To: <victim@nigelhorne.com>',
+		'Subject: Nested MIME test',
+		'Date: ' . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime),
+		'Message-ID: <nested@test>',
+		"Content-Type: multipart/mixed; boundary=\"$outer_boundary\"",
+		'',
+		$outer_body,
+	);
+
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email($raw);
+
+	my @urls  = $a->embedded_urls();
+	my @hosts = map { $_->{host} } @urls;
+
+	ok scalar(@urls) > 0,
+		'embedded_urls() finds URLs in nested multipart/mixed > multipart/alternative';
+	ok scalar(grep { /badshamart\.example/ } @hosts),
+		'correct hostname extracted from nested HTML part';
+	restore_net();
+};
+
+subtest 'nested MIME: three levels deep -- URLs still extracted' => sub {
+	# Ensure recursion handles arbitrary nesting depth, not just two levels.
+	null_net();
+	my $b1 = 'boundary_level1';
+	my $b2 = 'boundary_level2';
+	my $b3 = 'boundary_level3';
+
+	my $level3 = join("\r\n",
+		"--$b3",
+		'Content-Type: text/html; charset=us-ascii',
+		'',
+		'<a href="https://deep.nested.example/path">deep link</a>',
+		"--${b3}--",
+		'',
+	);
+	my $level2 = join("\r\n",
+		"--$b2",
+		"Content-Type: multipart/alternative; boundary=\"$b3\"",
+		'',
+		$level3,
+		"--${b2}--",
+		'',
+	);
+	my $level1 = join("\r\n",
+		"--$b1",
+		"Content-Type: multipart/related; boundary=\"$b2\"",
+		'',
+		$level2,
+		"--${b1}--",
+		'',
+	);
+
+	my $raw = join("\r\n",
+		'Received: from ext (ext [198.51.100.1]) by mx.nigelhorne.com with ESMTP',
+		'From: Spammer <spam@spammer.example>',
+		'To: <victim@nigelhorne.com>',
+		'Subject: Deep nesting test',
+		'Date: ' . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime),
+		'Message-ID: <deep@test>',
+		"Content-Type: multipart/mixed; boundary=\"$b1\"",
+		'',
+		$level1,
+	);
+
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email($raw);
+
+	my @urls = $a->embedded_urls();
+	ok scalar(@urls) > 0,
+		'embedded_urls() finds URLs three MIME levels deep';
+	ok scalar(grep { $_->{host} eq 'deep.nested.example' } @urls),
+		'correct hostname extracted from three-level nested part';
+	restore_net();
+};
+
+subtest 'nested MIME: non-multipart sibling parts still decoded' => sub {
+	# A multipart/mixed with one attachment part and one multipart/alternative
+	# part -- the attachment must be skipped cleanly and the alternative decoded.
+	null_net();
+	my $outer = 'outer_sib_001';
+	my $inner = 'inner_sib_001';
+
+	my $body = join("\r\n",
+		"--$outer",
+		'Content-Type: application/octet-stream',
+		'Content-Disposition: attachment; filename="file.bin"',
+		'',
+		'binarydata',
+		"--$outer",
+		"Content-Type: multipart/alternative; boundary=\"$inner\"",
+		'',
+		"--$inner",
+		'Content-Type: text/plain',
+		'',
+		'Plain sibling text.',
+		"--$inner",
+		'Content-Type: text/html',
+		'',
+		'<a href="https://sibling.example/link">click</a>',
+		"--${inner}--",
+		'',
+		"--${outer}--",
+		'',
+	);
+
+	my $raw = join("\r\n",
+		'Received: from ext (ext [198.51.100.1]) by mx.nigelhorne.com with ESMTP',
+		'From: Spammer <spam@spammer.example>',
+		'To: <victim@nigelhorne.com>',
+		'Subject: Sibling parts test',
+		'Date: ' . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime),
+		'Message-ID: <sib@test>',
+		"Content-Type: multipart/mixed; boundary=\"$outer\"",
+		'',
+		$body,
+	);
+
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email($raw);
+
+	my @urls = $a->embedded_urls();
+	ok scalar(grep { $_->{host} eq 'sibling.example' } @urls),
+		'URL in multipart/alternative sibling of attachment part is found';
+	restore_net();
+};
+
+# =============================================================================
+# 39. Regression: abuse_contacts() role merging (0.04 fix)
+#     Before the fix, duplicate addresses from multiple discovery routes
+#     were silently dropped; now they accumulate into roles/role.
+# =============================================================================
+
+subtest 'abuse_contacts role merging -- roles arrayref accumulates all routes' => sub {
+	# Arrange a message where the same provider (Google) is found via two
+	# distinct routes: as the sending ISP (rDNS match) and as a URL host.
+	# Both roles must appear in the merged entry.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		received    => 'from mail-wm1-f67.google.com (mail-wm1-f67.google.com'
+		             . ' [209.85.128.67]) by mx.nigelhorne.com with ESMTP',
+		from        => 'Spammer <spam@spammer.example>',
+		return_path => '<bounce@spammer.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Visit https://evilblog.blogspot.com/scam for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host =
+			sub { '209.85.128.67' };
+		local *Email::Abuse::Investigator::_reverse_dns  =
+			sub { 'mail-wm1-f67.google.com' };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts = $a->abuse_contacts();
+		my ($google)  = grep { $_->{address} eq 'abuse@google.com' } @contacts;
+
+		ok defined $google,
+			'abuse@google.com contact present';
+		ok defined $google->{roles},
+			'roles arrayref present on merged entry';
+		cmp_ok scalar(@{ $google->{roles} }), '>=', 2,
+			'at least two roles accumulated for abuse@google.com';
+		like $google->{role}, qr/and|x\d/,
+			'role string reflects multiple routes (joined or counted)';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts role merging -- role (singular) stays in sync' => sub {
+	# The legacy role key must always equal join(" and ", @{roles}) or the
+	# deduplicated (xN) form -- never be stale from the first discovery.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		received    => 'from mail-wm1-f67.google.com (mail-wm1-f67.google.com'
+		             . ' [209.85.128.67]) by mx.nigelhorne.com with ESMTP',
+		from        => 'Spammer <spam@spammer.example>',
+		return_path => '<bounce@spammer.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Visit https://evilblog.blogspot.com/scam for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host =
+			sub { '209.85.128.67' };
+		local *Email::Abuse::Investigator::_reverse_dns  =
+			sub { 'mail-wm1-f67.google.com' };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts = $a->abuse_contacts();
+		my ($google)  = grep { $_->{address} eq 'abuse@google.com' } @contacts;
+		ok defined $google, 'abuse@google.com found';
+
+		# role must be consistent with roles arrayref
+		my %counts;
+		$counts{$_}++ for @{ $google->{roles} };
+		my $expected = join(' and ', map {
+			$counts{$_} > 1 ? "$_ (x$counts{$_})" : $_
+		} do { my %seen; grep { !$seen{$_}++ } @{ $google->{roles} } });
+		is $google->{role}, $expected,
+			'role (singular) is consistent with roles arrayref';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts role merging -- first address not dropped when duplicate found' => sub {
+	# The very first discovery route must not be lost when a second route
+	# finds the same address.  Before the 0.04 fix the second $add() call
+	# returned early without updating anything, so the first role was kept
+	# but no merging occurred.  Now both roles must be present.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	# Two URLs on different blogspot subdomains -- both resolve to
+	# abuse@google.com via the provider table.
+	$a->parse_email(make_email(
+		from        => 'Spammer <spam@spammer.example>',
+		return_path => '<bounce@spammer.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'See https://spam1.blogspot.com/a '
+		             . 'and https://spam2.blogspot.com/b',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts  = $a->abuse_contacts();
+		my @google    = grep { $_->{address} eq 'abuse@google.com' } @contacts;
+
+		is scalar(@google), 1,
+			'abuse@google.com appears exactly once (deduplicated)';
+		cmp_ok scalar(@{ $google[0]->{roles} }), '>=', 2,
+			'both URL host routes merged into single entry';
+	}
+	restore_net();
+};
+
 done_testing();
 
