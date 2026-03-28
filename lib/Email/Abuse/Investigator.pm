@@ -3510,8 +3510,20 @@ sub abuse_contacts {
             # host, which is useful context for the abuse report recipient.
             my $entry = $contacts[ $seen_idx{$addr} ];
             push @{ $entry->{roles} }, $args{role};
-            # Keep 'role' (singular) in sync for any caller using the old key
-            $entry->{role} = join(' and ', @{ $entry->{roles} });
+            # Keep 'role' (singular) in sync for any caller using the old key.
+            # Where the same role string appears multiple times (e.g. "URL host"
+            # discovered via four different badshamart.com subdomains), collapse
+            # repeated labels into "URL host (x4)" rather than joining them
+            # verbatim, which would produce the unreadable
+            # "URL host and URL host and URL host and URL host".
+            my %role_counts;
+            my @ordered_roles;
+            for my $r (@{ $entry->{roles} }) {
+                push @ordered_roles, $r unless $role_counts{$r}++;
+            }
+            $entry->{role} = join(' and ', map {
+                $role_counts{$_} > 1 ? "$_ (x$role_counts{$_})" : $_
+            } @ordered_roles);
             return;
         }
         # First time we have seen this address -- record its position and add it
