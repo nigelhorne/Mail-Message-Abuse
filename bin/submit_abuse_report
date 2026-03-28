@@ -1,11 +1,11 @@
-	#!/usr/bin/env perl
+#!/usr/bin/env perl
 # -----------------------------------------------------------------------
-# submit_abuse_report -- analyse a spam/phishing email and send abuse
+# submit_abuse_report.pl -- analyse a spam/phishing email and send abuse
 #                           reports to all relevant parties.
 #
 # Usage:
-#   submit_abuse_report [options] spam.eml
-#   submit_abuse_report [options] < spam.eml
+#   submit_abuse_report.pl [options] spam.eml
+#   submit_abuse_report.pl [options] < spam.eml
 #
 # Options:
 #   --dry-run              Show what would be sent and to whom; do not
@@ -21,13 +21,13 @@
 #
 # Examples:
 #   # Dry run -- see what would be sent without sending anything
-#   submit_abuse_report --dry-run spam.eml
+#   submit_abuse_report.pl --dry-run spam.eml
 #
 #   # Send reports via the local MTA
-#   submit_abuse_report --from postmaster@myisp.example spam.eml
+#   submit_abuse_report.pl --from postmaster@myisp.example spam.eml
 #
 #   # Send via a specific SMTP relay, skipping our own outbound IP
-#   submit_abuse_report \
+#   submit_abuse_report.pl \
 #       --from abuse-reporter@example.com \
 #       --smtp mail.example.com:587 \
 #       --trusted 203.0.113.0/24 \
@@ -243,11 +243,45 @@ sub _dry_run_report {
     }
 
     print "\n$bar\n";
-    printf "  Total: %d recipient%s\n", scalar @{$contacts},
-        @{$contacts} == 1 ? '' : 's';
-    print "\n";
+
+    # Merge contacts that share an address so the footer shows one line per
+    # recipient with all roles combined.  This happens when the same provider
+    # is independently identified via multiple routes (e.g. Google is both the
+    # sending ISP and the owner of a blogspot.com URL in the message body).
+    # We preserve insertion order and accumulate roles as they appear.
+    my %seen_addr;   # address -> index into @merged
+    my @merged;      # [{address, roles => [...]}, ...]
     for my $c (@{$contacts}) {
-        printf "  %s (%s)\n", $c->{address}, $c->{role};
+        my $addr = $c->{address};
+        if (exists $seen_addr{$addr}) {
+            # Address already listed -- append this role to its entry
+            push @{ $merged[ $seen_addr{$addr} ]{roles} }, $c->{role};
+        } else {
+            # First time we have seen this address -- create a new entry
+            $seen_addr{$addr} = scalar @merged;
+            push @merged, { address => $addr, roles => [ $c->{role} ] };
+        }
+    }
+
+    # The total reflects unique addresses (i.e. emails that will be sent).
+    # If roles were merged, note the original contact-route count as well.
+    my $n_unique = scalar @merged;
+    my $n_total  = scalar @{$contacts};
+    if ($n_unique < $n_total) {
+        # Some addresses appeared under more than one role -- explain the merge
+        printf "  Total: %d recipient%s (%d contact route%s merged)\n",
+            $n_unique, $n_unique == 1 ? '' : 's',
+            $n_total,  $n_total  == 1 ? '' : 's';
+    } else {
+        printf "  Total: %d recipient%s\n",
+            $n_unique, $n_unique == 1 ? '' : 's';
+    }
+    print "\n";
+
+    # Print one line per unique recipient with roles joined by " and "
+    for my $m (@merged) {
+        my $role_str = join(' and ', @{ $m->{roles} });
+        printf "  %s (%s)\n", $m->{address}, $role_str;
     }
     print "$bar\n";
 }
@@ -432,7 +466,7 @@ sub _build_mime_message {
     push @msg, "Content-Type: multipart/report;";
     push @msg, "    report-type=feedback-report;";
     push @msg, "    boundary=\"$boundary\"";
-    push @msg, "X-Mailer: Email::Abuse::Investigator submit_abuse_report";
+    push @msg, "X-Mailer: Email::Abuse::Investigator submit_abuse_report.pl";
     push @msg, "";
 
     # Preamble for non-MIME clients
@@ -490,13 +524,13 @@ __END__
 
 =head1 NAME
 
-submit_abuse_report -- analyse a spam/phishing email and send abuse
+submit_abuse_report.pl -- analyse a spam/phishing email and send abuse
 reports to all relevant parties
 
 =head1 SYNOPSIS
 
-    submit_abuse_report [options] spam.eml
-    submit_abuse_report [options] < spam.eml
+    submit_abuse_report.pl [options] spam.eml
+    submit_abuse_report.pl [options] < spam.eml
 
 =head1 OPTIONS
 
