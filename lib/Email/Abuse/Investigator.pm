@@ -3764,6 +3764,183 @@ sub abuse_contacts {
     return @contacts;
 }
 
+=head2 form_contacts()
+
+Returns the list of parties that require abuse reports to be submitted via
+a web form rather than (or in addition to) email.  These are providers whose
+C<%PROVIDER_ABUSE> entry has a C<form> key.  Each hashref contains the form
+URL, instructions on what to paste, instructions on what to upload (if
+applicable), the role, and the discovery note.
+
+Returns a list (not an arrayref) of hashrefs, one per unique form contact,
+in discovery order.  Returns an empty list if no form-only or form-plus-email
+contacts are found.
+
+Each hashref contains:
+
+=over 4
+
+=item C<form> (string) -- the URL of the web form
+
+=item C<role> (string) -- human-readable role, same format as C<abuse_contacts()>
+
+=item C<note> (string) -- supporting detail about the provider
+
+=item C<form_paste> (string, optional) -- what text to paste into the form
+
+=item C<form_upload> (string, optional) -- what file to attach to the form
+
+=item C<via> (string) -- always C<'provider-table'>
+
+=back
+
+=cut
+
+sub form_contacts {
+	my ($self) = @_;
+	my (@contacts, %seen);
+
+	my $add = sub {
+		my (%args) = @_;
+		my $form = $args{form} // '';
+		return unless $form;
+		return if $seen{$form}++;
+		push @contacts, \%args;
+	};
+
+	# Route 1 -- Sending ISP
+	my $orig = $self->originating_ip();
+	if ($orig) {
+		my $pa = $self->_provider_abuse_for_ip($orig->{ip}, $orig->{rdns});
+		if ($pa && $pa->{form}) {
+			$add->(
+				role        => 'Sending ISP (provider table)',
+				form        => $pa->{form},
+				note        => $pa->{note} // '',
+				form_paste  => $pa->{form_paste}  // '',
+				form_upload => $pa->{form_upload} // '',
+				via         => 'provider-table',
+			);
+		}
+	}
+
+	# Route 2 -- URL hosts
+	my %url_host_seen;
+	for my $u ($self->embedded_urls()) {
+		next if $url_host_seen{ $u->{host} }++;
+		my $pa = $self->_provider_abuse_for_host($u->{host});
+		if ($pa && $pa->{form}) {
+			$add->(
+				role        => 'URL host (provider table)',
+				form        => $pa->{form},
+				form_domain => $u->{host},
+				note        => $pa->{note} // '',
+				form_paste  => $pa->{form_paste}  // '',
+				form_upload => $pa->{form_upload} // '',
+				via         => 'provider-table',
+			);
+		}
+	}
+
+	# Route 3 -- Contact domains (web host + registrar)
+	for my $d ($self->mailto_domains()) {
+		my $dom = $d->{domain};
+		my $pa  = $self->_provider_abuse_for_host($dom);
+		if ($pa && $pa->{form}) {
+			$add->(
+				role        => "Web host of $dom (provider table)",
+				form        => $pa->{form},
+				form_domain => $dom,
+				note        => $pa->{note} // '',
+				form_paste  => $pa->{form_paste}  // '',
+				form_upload => $pa->{form_upload} // '',
+				via         => 'provider-table',
+			);
+		}
+		# Registrar identified via WHOIS -- check whether the registrar has
+		# a provider-table entry with a web form.  Derive the registrar's
+		# domain from the registrar_abuse email address (e.g.
+		# "abusecomplaints@markmonitor.com" -> "markmonitor.com") and look
+		# that up via _provider_abuse_for_host().  Self-extending: any new
+		# form-only registrar added to %PROVIDER_ABUSE is picked up here
+		# automatically without changing this code.
+		if ($d->{registrar_abuse} && $d->{registrar_abuse} =~ /\@([\w.-]+)/) {
+			my $reg_domain = lc $1;
+			my $rpa = $self->_provider_abuse_for_host($reg_domain);
+			if ($rpa && $rpa->{form}) {
+				$add->(
+					role        => "Domain registrar for $dom (web form only)",
+					form        => $rpa->{form},
+					form_domain => $dom,
+					note        => $rpa->{note} // '',
+					form_paste  => $rpa->{form_paste}  // '',
+					form_upload => $rpa->{form_upload} // '',
+					via         => 'provider-table',
+				);
+			}
+		}
+	}
+
+	# Route 4 -- Account provider headers
+	for my $hname (qw(from reply-to return-path sender)) {
+		my $val = $self->_header_value($hname) // next;
+		my $addr_spec = ($val =~ /<([^>]*)>\s*$/) ? $1 : $val;
+		my ($addr_domain) = $addr_spec =~ /\@([\w.-]+)/;
+		next unless $addr_domain;
+		my $pa = $self->_provider_abuse_for_host($addr_domain);
+		if ($pa && $pa->{form}) {
+			$add->(
+				role        => "Account provider ($hname: $val)",
+				form        => $pa->{form},
+				note        => $pa->{note} // '',
+				form_paste  => $pa->{form_paste}  // '',
+				form_upload => $pa->{form_upload} // '',
+				via         => 'provider-table',
+			);
+		}
+	}
+
+	# Route 5 -- DKIM signer
+	my $auth = $self->_parse_auth_results_cached();
+	if ($auth->{dkim_domain}) {
+		my $pa = $self->_provider_abuse_for_host($auth->{dkim_domain});
+		if ($pa && $pa->{form}) {
+			$add->(
+				role        => "DKIM signer (provider table): $auth->{dkim_domain}",
+				form        => $pa->{form},
+				note        => $pa->{note} // '',
+				form_paste  => $pa->{form_paste}  // '',
+				form_upload => $pa->{form_upload} // '',
+				via         => 'provider-table',
+			);
+		}
+	}
+
+	# Route 6 -- List-Unsubscribe
+	my $unsub = $self->_header_value('list-unsubscribe');
+	if ($unsub) {
+		my @unsub_domains;
+		while ($unsub =~ m{https?://([^/:?\s>]+)}gi) { push @unsub_domains, lc $1 }
+		while ($unsub =~ m{mailto:[^@\s>]+\@([\w.-]+)}gi) { push @unsub_domains, lc $1 }
+		my %useen;
+		for my $dom (grep { !$useen{$_}++ } @unsub_domains) {
+			my $pa = $self->_provider_abuse_for_host($dom);
+			if ($pa && $pa->{form}) {
+				$add->(
+					role        => "ESP / bulk sender (List-Unsubscribe: $dom)",
+					form        => $pa->{form},
+					note        => $pa->{note} // '',
+					form_paste  => $pa->{form_paste}  // '',
+					form_upload => $pa->{form_upload} // '',
+					via         => 'provider-table',
+				);
+			}
+		}
+	}
+
+	return @contacts;
+}
+
 =head2 report()
 
 Returns a formatted plain-text abuse report.
@@ -4026,183 +4203,6 @@ at the time C<report()> is called.
     }
 
 =cut
-
-=head2 form_contacts()
-
-Returns the list of parties that require abuse reports to be submitted via
-a web form rather than (or in addition to) email.  These are providers whose
-C<%PROVIDER_ABUSE> entry has a C<form> key.  Each hashref contains the form
-URL, instructions on what to paste, instructions on what to upload (if
-applicable), the role, and the discovery note.
-
-Returns a list (not an arrayref) of hashrefs, one per unique form contact,
-in discovery order.  Returns an empty list if no form-only or form-plus-email
-contacts are found.
-
-Each hashref contains:
-
-=over 4
-
-=item C<form> (string) -- the URL of the web form
-
-=item C<role> (string) -- human-readable role, same format as C<abuse_contacts()>
-
-=item C<note> (string) -- supporting detail about the provider
-
-=item C<form_paste> (string, optional) -- what text to paste into the form
-
-=item C<form_upload> (string, optional) -- what file to attach to the form
-
-=item C<via> (string) -- always C<'provider-table'>
-
-=back
-
-=cut
-
-sub form_contacts {
-	my ($self) = @_;
-	my (@contacts, %seen);
-
-	my $add = sub {
-		my (%args) = @_;
-		my $form = $args{form} // '';
-		return unless $form;
-		return if $seen{$form}++;
-		push @contacts, \%args;
-	};
-
-	# Route 1 -- Sending ISP
-	my $orig = $self->originating_ip();
-	if ($orig) {
-		my $pa = $self->_provider_abuse_for_ip($orig->{ip}, $orig->{rdns});
-		if ($pa && $pa->{form}) {
-			$add->(
-				role        => 'Sending ISP (provider table)',
-				form        => $pa->{form},
-				note        => $pa->{note} // '',
-				form_paste  => $pa->{form_paste}  // '',
-				form_upload => $pa->{form_upload} // '',
-				via         => 'provider-table',
-			);
-		}
-	}
-
-	# Route 2 -- URL hosts
-	my %url_host_seen;
-	for my $u ($self->embedded_urls()) {
-		next if $url_host_seen{ $u->{host} }++;
-		my $pa = $self->_provider_abuse_for_host($u->{host});
-		if ($pa && $pa->{form}) {
-			$add->(
-				role        => 'URL host (provider table)',
-				form        => $pa->{form},
-				form_domain => $u->{host},
-				note        => $pa->{note} // '',
-				form_paste  => $pa->{form_paste}  // '',
-				form_upload => $pa->{form_upload} // '',
-				via         => 'provider-table',
-			);
-		}
-	}
-
-	# Route 3 -- Contact domains (web host + registrar)
-	for my $d ($self->mailto_domains()) {
-		my $dom = $d->{domain};
-		my $pa  = $self->_provider_abuse_for_host($dom);
-		if ($pa && $pa->{form}) {
-			$add->(
-				role        => "Web host of $dom (provider table)",
-				form        => $pa->{form},
-				form_domain => $dom,
-				note        => $pa->{note} // '',
-				form_paste  => $pa->{form_paste}  // '',
-				form_upload => $pa->{form_upload} // '',
-				via         => 'provider-table',
-			);
-		}
-		# Registrar identified via WHOIS -- check whether the registrar has
-		# a provider-table entry with a web form.  Derive the registrar's
-		# domain from the registrar_abuse email address (e.g.
-		# "abusecomplaints@markmonitor.com" -> "markmonitor.com") and look
-		# that up via _provider_abuse_for_host().  Self-extending: any new
-		# form-only registrar added to %PROVIDER_ABUSE is picked up here
-		# automatically without changing this code.
-		if ($d->{registrar_abuse} && $d->{registrar_abuse} =~ /\@([\w.-]+)/) {
-			my $reg_domain = lc $1;
-			my $rpa = $self->_provider_abuse_for_host($reg_domain);
-			if ($rpa && $rpa->{form}) {
-				$add->(
-					role        => "Domain registrar for $dom (web form only)",
-					form        => $rpa->{form},
-					form_domain => $dom,
-					note        => $rpa->{note} // '',
-					form_paste  => $rpa->{form_paste}  // '',
-					form_upload => $rpa->{form_upload} // '',
-					via         => 'provider-table',
-				);
-			}
-		}
-	}
-
-	# Route 4 -- Account provider headers
-	for my $hname (qw(from reply-to return-path sender)) {
-		my $val = $self->_header_value($hname) // next;
-		my $addr_spec = ($val =~ /<([^>]*)>\s*$/) ? $1 : $val;
-		my ($addr_domain) = $addr_spec =~ /\@([\w.-]+)/;
-		next unless $addr_domain;
-		my $pa = $self->_provider_abuse_for_host($addr_domain);
-		if ($pa && $pa->{form}) {
-			$add->(
-				role        => "Account provider ($hname: $val)",
-				form        => $pa->{form},
-				note        => $pa->{note} // '',
-				form_paste  => $pa->{form_paste}  // '',
-				form_upload => $pa->{form_upload} // '',
-				via         => 'provider-table',
-			);
-		}
-	}
-
-	# Route 5 -- DKIM signer
-	my $auth = $self->_parse_auth_results_cached();
-	if ($auth->{dkim_domain}) {
-		my $pa = $self->_provider_abuse_for_host($auth->{dkim_domain});
-		if ($pa && $pa->{form}) {
-			$add->(
-				role        => "DKIM signer (provider table): $auth->{dkim_domain}",
-				form        => $pa->{form},
-				note        => $pa->{note} // '',
-				form_paste  => $pa->{form_paste}  // '',
-				form_upload => $pa->{form_upload} // '',
-				via         => 'provider-table',
-			);
-		}
-	}
-
-	# Route 6 -- List-Unsubscribe
-	my $unsub = $self->_header_value('list-unsubscribe');
-	if ($unsub) {
-		my @unsub_domains;
-		while ($unsub =~ m{https?://([^/:?\s>]+)}gi) { push @unsub_domains, lc $1 }
-		while ($unsub =~ m{mailto:[^@\s>]+\@([\w.-]+)}gi) { push @unsub_domains, lc $1 }
-		my %useen;
-		for my $dom (grep { !$useen{$_}++ } @unsub_domains) {
-			my $pa = $self->_provider_abuse_for_host($dom);
-			if ($pa && $pa->{form}) {
-				$add->(
-					role        => "ESP / bulk sender (List-Unsubscribe: $dom)",
-					form        => $pa->{form},
-					note        => $pa->{note} // '',
-					form_paste  => $pa->{form_paste}  // '',
-					form_upload => $pa->{form_upload} // '',
-					via         => 'provider-table',
-				);
-			}
-		}
-	}
-
-	return @contacts;
-}
 
 sub report {
 	my $self = $_[0];
