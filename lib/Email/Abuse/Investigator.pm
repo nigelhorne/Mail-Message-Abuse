@@ -3542,8 +3542,8 @@ malformed messages.
 =cut
 
 sub abuse_contacts {
-    my ($self) = @_;
-    my (@contacts, %seen_idx);
+	my $self = $_[0];
+	my (@contacts, %seen_idx);
 
     # $add records an abuse contact.  If the address has already been seen,
     # the new role is appended to the existing entry rather than discarded.
@@ -3599,7 +3599,7 @@ sub abuse_contacts {
     if ($orig) {
         my $pa = $self->_provider_abuse_for_ip($orig->{ip}, $orig->{rdns});
         if ($pa) {
-            $add->(role    => 'Sending ISP (provider table)',
+            $add->(role    => 'Sending ISP',
                    address => $pa->{email},
                    note    => "$orig->{ip} ($orig->{rdns}) — $pa->{note}",
                    via     => 'provider-table');
@@ -3618,13 +3618,13 @@ sub abuse_contacts {
         next if $url_host_seen{ $u->{host} }++;
         my $pa = $self->_provider_abuse_for_host($u->{host});
         if ($pa) {
-            $add->(role    => "URL host (provider table)",
+            $add->(role    => "URL host: $u->{host}",
                    address => $pa->{email},
                    note    => "$u->{host} — $pa->{note}",
                    via     => 'provider-table');
         }
         if ($u->{abuse} && $u->{abuse} ne '(unknown)') {
-            $add->(role    => 'URL host',
+            $add->(role    => "URL host: $u->{host}",
                    address => $u->{abuse},
                    note    => "Hosting $u->{host} ($u->{ip}, $u->{org})",
                    via     => 'ip-whois');
@@ -3639,7 +3639,7 @@ sub abuse_contacts {
         if ($d->{web_abuse}) {
             my $pa = $self->_provider_abuse_for_host($dom);
             if ($pa) {
-                $add->(role    => "Web host of $dom (provider table)",
+                $add->(role    => "Web host of $dom",
                        address => $pa->{email},
                        note    => $pa->{note},
                        via     => 'provider-table');
@@ -3714,16 +3714,18 @@ sub abuse_contacts {
         # Look up the domain (and its parents via subdomain stripping) in
         # the built-in provider table.  A hit means the account is hosted
         # by a known webmail or ESP provider we can contact directly.
-        my $pa = $self->_provider_abuse_for_host($addr_domain);
+	my $pa = $self->_provider_abuse_for_host($addr_domain);
         if ($pa) {
-            $add->(role    => "Account provider ($hname: $val)",
+            my $role_addr = $addr_spec =~ /@/ ? $addr_spec : $val;
+            $role_addr =~ s/^\s+|\s+$//g;
+            $add->(role    => "Account provider ($hname: $role_addr)",
                    address => $pa->{email},
                    note    => $pa->{note},
                    via     => 'provider-table');
         }
     }
 
-    # 5. DKIM signing domain — the organisation that vouches for the message
+    # 5. DKIM signing domain
     # The full domain pipeline (web/MX/NS/WHOIS) is already run on the DKIM
     # domain via mailto_domains(), so here we only need the provider-table
     # lookup for fast resolution of well-known ESPs.
@@ -3731,7 +3733,7 @@ sub abuse_contacts {
     if ($auth->{dkim_domain}) {
         my $pa = $self->_provider_abuse_for_host($auth->{dkim_domain});
         if ($pa) {
-            $add->(role    => "DKIM signer (provider table): $auth->{dkim_domain}",
+            $add->(role    => "DKIM signer: $auth->{dkim_domain}",
                    address => $pa->{email},
                    note    => $pa->{note},
                    via     => 'provider-table');
@@ -3814,7 +3816,7 @@ sub form_contacts {
 		my $pa = $self->_provider_abuse_for_ip($orig->{ip}, $orig->{rdns});
 		if ($pa && $pa->{form}) {
 			$add->(
-				role        => 'Sending ISP (provider table)',
+				role        => 'Sending ISP',
 				form        => $pa->{form},
 				note        => $pa->{note} // '',
 				form_paste  => $pa->{form_paste}  // '',
@@ -3831,7 +3833,7 @@ sub form_contacts {
 		my $pa = $self->_provider_abuse_for_host($u->{host});
 		if ($pa && $pa->{form}) {
 			$add->(
-				role        => 'URL host (provider table)',
+				role        => 'URL host',
 				form        => $pa->{form},
 				form_domain => $u->{host},
 				note        => $pa->{note} // '',
@@ -3848,7 +3850,7 @@ sub form_contacts {
 		my $pa  = $self->_provider_abuse_for_host($dom);
 		if ($pa && $pa->{form}) {
 			$add->(
-				role        => "Web host of $dom (provider table)",
+				role        => "Web host of $dom)",
 				form        => $pa->{form},
 				form_domain => $dom,
 				note        => $pa->{note} // '',
@@ -3888,9 +3890,11 @@ sub form_contacts {
 		my ($addr_domain) = $addr_spec =~ /\@([\w.-]+)/;
 		next unless $addr_domain;
 		my $pa = $self->_provider_abuse_for_host($addr_domain);
-		if ($pa && $pa->{form}) {
-			$add->(
-				role        => "Account provider ($hname: $val)",
+        if ($pa && $pa->{form}) {
+            my $role_addr = $addr_spec =~ /@/ ? $addr_spec : $val;
+            $role_addr =~ s/^\s+|\s+$//g;
+            $add->(
+                role        => "Account provider ($hname: $role_addr)",
 				form        => $pa->{form},
 				note        => $pa->{note} // '',
 				form_paste  => $pa->{form_paste}  // '',
@@ -3906,7 +3910,7 @@ sub form_contacts {
 		my $pa = $self->_provider_abuse_for_host($auth->{dkim_domain});
 		if ($pa && $pa->{form}) {
 			$add->(
-				role        => "DKIM signer (provider table): $auth->{dkim_domain}",
+				role        => "DKIM signer: $auth->{dkim_domain}",
 				form        => $pa->{form},
 				note        => $pa->{note} // '',
 				form_paste  => $pa->{form_paste}  // '',

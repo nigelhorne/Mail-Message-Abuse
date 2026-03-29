@@ -1957,11 +1957,40 @@ subtest 'abuse_contacts -- URL host domain WHOIS fallback when IP unresolvable' 
 	restore_net();
 };
 
-subtest 'abuse_contacts -- role deduplication: repeated label collapsed to (xN)' => sub {
-	# When the same role string ("URL host") accumulates multiple times for one
-	# address (e.g. four badshamart.com subdomains all resolving to the same
-	# registrar), the role display string should be "URL host (x4)" not
-	# "URL host and URL host and URL host and URL host".
+subtest 'abuse_contacts -- role deduplication: same hostname twice collapsed' => sub {
+	# Role strings now include the hostname ("URL host: host.example"), so
+	# two URLs on the SAME host produce identical role strings and collapse
+	# to (x2).  Two URLs on DIFFERENT hosts produce distinct role strings
+	# and are joined with "and" -- they should NOT be collapsed since each
+	# hostname is individually actionable.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		# Same Blogspot subdomain linked twice -- same role string twice
+		body =>   'https://spamblog.blogspot.com/page1 '
+		        . 'https://spamblog.blogspot.com/page2 ',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+		my @contacts = $a->abuse_contacts();
+		my ($c) = grep { $_->{address} eq 'abuse@google.com' } @contacts;
+		ok defined $c, 'google abuse contact found for blogspot URLs';
+		# Same host deduped by _extract_and_resolve_urls -- only one URL host role
+		is scalar(grep { /URL host/ } @{ $c->{roles} }), 1,
+			'same hostname only produces one URL host role entry';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts -- role deduplication: different subdomains each get own role' => sub {
+	# Four different subdomains resolving to the same registrar abuse address
+	# produce four distinct role strings (one per hostname), joined with "and".
+	# They must NOT be collapsed to (xN) since each hostname is distinct and
+	# individually actionable information for the abuse desk.
 	null_net();
 	my $a = new_ok('Email::Abuse::Investigator');
 	$a->parse_email(make_email(
@@ -1988,10 +2017,12 @@ subtest 'abuse_contacts -- role deduplication: repeated label collapsed to (xN)'
 		ok defined $c, 'merged contact found';
 		is scalar(@{ $c->{roles} }), 4,
 			'roles arrayref has four entries (one per URL host)';
-		like $c->{role}, qr/\(x4\)/,
-			'role display string contains (x4) count suffix';
-		unlike $c->{role}, qr/URL host.*and.*URL host/,
-			'role display string does not repeat label verbatim';
+		unlike $c->{role}, qr/\(x4\)/,
+			'distinct hostnames not collapsed with (xN)';
+		like $c->{role}, qr/a1\.spamdomain\.example/,
+			'first hostname present in role string';
+		like $c->{role}, qr/a4\.spamdomain\.example/,
+			'last hostname present in role string';
 	}
 	restore_net();
 };
