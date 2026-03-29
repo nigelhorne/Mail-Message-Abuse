@@ -1,11 +1,11 @@
 #!/usr/bin/env perl
 # -----------------------------------------------------------------------
-# submit_abuse_report -- analyse a spam/phishing email and send abuse
+# submit_abuse_report.pl -- analyse a spam/phishing email and send abuse
 #                           reports to all relevant parties.
 #
 # Usage:
-#   submit_abuse_report [options] spam.eml
-#   submit_abuse_report [options] < spam.eml
+#   submit_abuse_report.pl [options] spam.eml
+#   submit_abuse_report.pl [options] < spam.eml
 #
 # Options:
 #   --dry-run              Show what would be sent and to whom; do not
@@ -21,13 +21,13 @@
 #
 # Examples:
 #   # Dry run -- see what would be sent without sending anything
-#   submit_abuse_report --dry-run spam.eml
+#   submit_abuse_report.pl --dry-run spam.eml
 #
 #   # Send reports via the local MTA
-#   submit_abuse_report --from postmaster@myisp.example spam.eml
+#   submit_abuse_report.pl --from postmaster@myisp.example spam.eml
 #
 #   # Send via a specific SMTP relay, skipping our own outbound IP
-#   submit_abuse_report \
+#   submit_abuse_report.pl \
 #       --from abuse-reporter@example.com \
 #       --smtp mail.example.com:587 \
 #       --trusted 203.0.113.0/24 \
@@ -279,6 +279,7 @@ sub _dry_run_report {
         for my $c (@form_cs) {
             printf "  Role     : %s\n", $c->{role};
             printf "  Form URL : %s\n", $c->{form};
+            printf "  Domain   : %s\n", $c->{form_domain} if $c->{form_domain};
             if ($c->{form_paste}) {
                 printf "  Paste    : %s\n", $c->{form_paste};
             }
@@ -472,7 +473,7 @@ sub _build_mime_message {
     push @msg, "Content-Type: multipart/report;";
     push @msg, "    report-type=feedback-report;";
     push @msg, "    boundary=\"$boundary\"";
-    push @msg, "X-Mailer: Email::Abuse::Investigator submit_abuse_report";
+    push @msg, "X-Mailer: Email::Abuse::Investigator submit_abuse_report.pl";
     push @msg, "";
 
     # Preamble for non-MIME clients
@@ -530,13 +531,13 @@ __END__
 
 =head1 NAME
 
-submit_abuse_report -- analyse a spam/phishing email and send abuse
+submit_abuse_report.pl -- analyse a spam/phishing email and send abuse
 reports to all relevant parties
 
 =head1 SYNOPSIS
 
-    submit_abuse_report [options] spam.eml
-    submit_abuse_report [options] < spam.eml
+    submit_abuse_report.pl [options] spam.eml
+    submit_abuse_report.pl [options] < spam.eml
 
 =head1 OPTIONS
 
