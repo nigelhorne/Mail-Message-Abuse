@@ -453,11 +453,18 @@ sub _build_mime_message {
     my $boundary = sprintf 'arf_report_%s_%d',
         strftime('%Y%m%d%H%M%S', gmtime), $$;
 
-    # Normalise line endings to CRLF throughout
+    # Normalise line endings to CRLF throughout, then encode to raw UTF-8
+    # bytes.  Net::SMTP->datasend() calls syswrite() on a raw socket and
+    # cannot handle Perl strings with the Unicode flag set (wide characters).
+    # The body may contain non-ASCII characters (e.g. emoji in decoded subject
+    # lines) so we must encode explicitly rather than rely on the socket layer.
+    require Encode;
     (my $body_crlf     = $a{body}) =~ s/\r?\n/\r\n/g;
+    $body_crlf = Encode::encode('UTF-8', $body_crlf);
     my $original_crlf  = '';
     if (defined $a{original} && length ${ $a{original} }) {
         ($original_crlf = ${ $a{original} }) =~ s/\r?\n/\r\n/g;
+        $original_crlf = Encode::encode('UTF-8', $original_crlf);
     }
     my $feedback_report = _build_feedback_report($a{inv});
 
