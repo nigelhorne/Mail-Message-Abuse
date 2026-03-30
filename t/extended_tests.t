@@ -2788,4 +2788,113 @@ subtest 'abuse_contacts -- w3.org URL does not generate abuse contact' => sub {
 	restore_net();
 };
 
+
+# =============================================================================
+# 43. Regression: body reply address route in abuse_contacts() (0.07)
+#     Advance-fee and investment scams commonly spoof the From: address but
+#     include a real free-webmail contact address in the body text.
+# =============================================================================
+
+subtest 'abuse_contacts -- hotmail reply address in body produces microsoft contact' => sub {
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <spoofed@qwestoffice.net>',
+		return_path => '<spoofed@qwestoffice.net>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Contact us at profcindyinvestments@hotmail.com for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts  = $a->abuse_contacts();
+		my @addresses = map { lc $_->{address} } @contacts;
+		ok scalar(grep { $_ eq 'abuse@microsoft.com' } @addresses),
+			'abuse@microsoft.com generated for hotmail.com reply address in body';
+		my ($c) = grep { $_->{address} eq 'abuse@microsoft.com' &&
+		                 $_->{role} =~ /body/ } @contacts;
+		ok defined $c,
+			'contact has body-route role';
+		like $c->{role}, qr/profcindyinvestments\@hotmail\.com/i,
+			'role string includes the specific reply address';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts -- gmail reply address in body produces google contact' => sub {
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <spoofed@innocent.example>',
+		return_path => '<spoofed@innocent.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Send money to scammer@gmail.com to claim your prize',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts  = $a->abuse_contacts();
+		my @addresses = map { lc $_->{address} } @contacts;
+		ok scalar(grep { $_ eq 'abuse@google.com' } @addresses),
+			'abuse@google.com generated for gmail.com reply address in body';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts -- body reply address not duplicated if already found via header' => sub {
+	# If the From: header and body both mention the same provider domain,
+	# deduplication must ensure only one contact entry results.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <spam@gmail.com>',
+		return_path => '<spam@gmail.com>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Reply to spam@gmail.com for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts = $a->abuse_contacts();
+		my @google   = grep { $_->{address} eq 'abuse@google.com' } @contacts;
+		is scalar(@google), 1,
+			'abuse@google.com appears only once despite header and body both matching';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts -- non-provider body address does not generate contact' => sub {
+	# An email address in the body whose domain is not in %PROVIDER_ABUSE
+	# must not generate a contact via this route.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <spam@spammer.example>',
+		return_path => '<spam@spammer.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Contact unknown@unknowndomain.example for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts  = $a->abuse_contacts();
+		my @addresses = map { lc $_->{address} } @contacts;
+		ok !scalar(grep { /unknown/ } @addresses),
+			'unknown provider domain in body does not generate spurious contact';
+	}
+	restore_net();
+};
+
 done_testing();

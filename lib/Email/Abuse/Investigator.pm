@@ -3770,6 +3770,31 @@ sub abuse_contacts {
         }
     }
 
+    # 7. Reply addresses in the message body
+    # Bare email addresses in the body (e.g. "contact us at spam@hotmail.com")
+    # are extracted and their domains looked up in the provider table.  This
+    # catches the common advance-fee / investment scam pattern where the
+    # sending address is spoofed but the real contact address is a free
+    # webmail account mentioned explicitly in the body text.
+    # Note: %TRUSTED_DOMAINS filtering is intentionally bypassed here --
+    # being hosted on a trusted provider (Hotmail, Gmail) is exactly what
+    # makes these addresses actionable; the spammer chose a free webmail
+    # account as their contact precisely because it is trustworthy-looking.
+    # Recipient domains are still excluded to avoid false positives.
+    my %body_addr_seen;
+    my $combined_body = $self->{_body_plain} . "\n" . $self->{_body_html};
+    for my $addr_dom ($self->_domains_from_text($combined_body)) {
+        next if $body_addr_seen{$addr_dom}++;
+        my $pa = $self->_provider_abuse_for_host($addr_dom);
+        next unless $pa && $pa->{email};
+        my ($example_addr) = $combined_body =~ /(\S+\@\Q$addr_dom\E)/i;
+        $example_addr //= "\@$addr_dom";
+        $add->(role    => "Reply address in body ($example_addr)",
+               address => $pa->{email},
+               note    => $pa->{note},
+               via     => 'provider-table');
+    }
+
     return @contacts;
 }
 
