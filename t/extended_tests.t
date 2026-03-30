@@ -2962,4 +2962,33 @@ subtest 'abuse_contacts -- From: domain registrar reported when domain also in U
 	restore_net();
 };
 
+subtest 'abuse_contacts -- short merged role not capped' => sub {
+	# A role string under 80 chars must not be summarised with "N routes:".
+	# Use IP WHOIS only (no provider-table match) to keep the role short.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from     => 'Spammer <spam@unknowndomain.example>',
+		to       => '<victim@nigelhorne.com>',
+		body     => 'Buy now',
+		received => 'from mail.badactor.example (mail.badactor.example [198.51.100.1])'
+		          . ' by mx.nigelhorne.com with ESMTP',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { '198.51.100.1' };
+		local *Email::Abuse::Investigator::_whois_ip     = sub {
+			{ org => 'Bad Actor Hosting', abuse => 'abuse@badactor.example' }
+		};
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts = $a->abuse_contacts();
+		my ($c) = grep { $_->{address} eq 'abuse@badactor.example' } @contacts;
+		ok defined $c, 'abuse contact found';
+		unlike $c->{role}, qr/\d+ routes:/,
+			'short single-route role string not summarised with N routes: format';
+	}
+	restore_net();
+};
+
 done_testing();
