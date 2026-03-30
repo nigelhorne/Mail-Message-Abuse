@@ -225,11 +225,11 @@ hosted URLs, and suspicious domains
 
 =head1 VERSION
 
-Version 0.06
+Version 0.07
 
 =cut
 
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 
 =head1 SYNOPSIS
 
@@ -3683,11 +3683,15 @@ sub abuse_contacts {
 
         # Domain registrar
         if ($d->{registrar_abuse}) {
-            $add->(role    => "Domain registrar for $dom",
-                   address => $d->{registrar_abuse},
-                   note    => 'Registrar: ' . ($d->{registrar} // '(unknown)'),
-                   via     => 'domain-whois');
-        }
+		my $spoofable_only = $d->{source} =~ /^(?:From:|Return-Path:|Sender:) header$/ &&
+			!scalar(grep { $_->{host} && _registrable($_->{host}) eq (_registrable($dom) // $dom) } $self->embedded_urls());
+		unless ($spoofable_only) {
+			$add->(role    => "Domain registrar for $dom",
+			address => $d->{registrar_abuse},
+			note    => 'Registrar: ' . ($d->{registrar} // '(unknown)'),
+			via     => 'domain-whois');
+		}
+	}
     }
 
     # 4. From: / Reply-To: / Return-Path: / Sender: account provider

@@ -2897,4 +2897,69 @@ subtest 'abuse_contacts -- non-provider body address does not generate contact' 
 	restore_net();
 };
 
+subtest 'abuse_contacts -- spoofed From: domain registrar not reported' => sub {
+	# qwestoffice.net pattern: the From:/Return-Path: domain is an innocent
+	# victim of spoofing.  It appears only in sending headers, never in URLs
+	# or body addresses.  Its registrar must not receive an abuse report.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <spoofed@innocent-victim.example>',
+		return_path => '<spoofed@innocent-victim.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Contact us at scammer@hotmail.com for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub {
+			my (undef, $dom) = @_;
+			return "Registrar: Innocent Registrar Inc\n"
+			     . "Registrar Abuse Contact Email: abuse\@innocentregistrar.example\n"
+				if $dom eq 'innocent-victim.example';
+			return undef;
+		};
+
+		my @contacts  = $a->abuse_contacts();
+		my @addresses = map { lc $_->{address} } @contacts;
+		ok !scalar(grep { /innocentregistrar/ } @addresses),
+			'registrar of spoofed From: domain not included in contacts';
+		ok scalar(grep { $_ eq 'abuse@microsoft.com' } @addresses),
+			'real reply address (hotmail) still produces contact';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts -- From: domain registrar reported when domain also in URL' => sub {
+	# When the From: domain also appears as a URL host, the spammer controls
+	# it -- it is not spoofed.  The registrar contact must be included.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		from        => 'Spammer <deals@spamsite.example>',
+		return_path => '<deals@spamsite.example>',
+		to          => '<victim@nigelhorne.com>',
+		body        => 'Visit https://spamsite.example/offer now',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub {
+			my (undef, $dom) = @_;
+			return "Registrar: Dodgy Registrar Inc\n"
+			     . "Registrar Abuse Contact Email: abuse\@dodgyregistrar.example\n"
+				if $dom eq 'spamsite.example';
+			return undef;
+		};
+
+		my @contacts  = $a->abuse_contacts();
+		my @addresses = map { lc $_->{address} } @contacts;
+		ok scalar(grep { /dodgyregistrar/ } @addresses),
+			'registrar included when From: domain also appears as URL host';
+	}
+	restore_net();
+};
+
 done_testing();

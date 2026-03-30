@@ -1,6 +1,6 @@
 Revision history for Email-Abuse-Investigator
 
-0.07
+0.07	Mon Mar 30 08:45:04 EDT 2026
 
   Bug fixes
 
@@ -20,6 +20,22 @@ Revision history for Email-Abuse-Investigator
     The role string includes the specific address found, e.g.
     "Reply address in body (profcindyinvestments@hotmail.com)", so the
     abuse desk knows exactly which account to investigate.
+
+  - Fixed abuse_contacts() generating registrar contacts for innocent domains
+    that appear only in spoofable sending headers (From:, Return-Path:,
+    Sender:).  These headers are trivially forged; when a spammer uses a
+    victim's address as the envelope sender, reporting the victim's domain
+    registrar is both unhelpful and potentially harmful to the innocent party.
+    The registrar contact is now suppressed when the domain's only source is
+    one of these three headers AND the same domain does not also appear as a
+    URL host.  If the From: domain appears in a URL as well, the spammer
+    controls it and the registrar contact is retained.  Domains sourced from
+    Reply-To:, DKIM-Signature:, List-Unsubscribe:, Message-ID:, or the
+    message body are unaffected -- those all indicate deliberate spammer
+    choice.  Discovered via a real advance-fee spam where qwestoffice.net
+    was spoofed as the sender but profcindyinvestments@hotmail.com was the
+    actual reply address, causing a false report to CSC Global (registrar
+    of qwestoffice.net).
 
   - Fixed abuse_contacts() generating spurious account-provider contacts
     from SRS-rewritten Return-Path: and Sender: headers.  SRS (Sender
