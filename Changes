@@ -1,5 +1,18 @@
 Revision history for Email-Abuse-Investigator
 
+0.08
+
+  New features
+
+  - Added -i / --interactive flag to submit_abuse_report, modelled on
+    rm -i.  When set, the script prompts for confirmation before sending
+    each abuse report.  The recipient address and the reason for contacting
+    them (the role string) are displayed, followed by a "Send? [y/N]"
+    prompt.  Only reports answered with "y" are sent; all others are
+    skipped and noted in the output but not counted as failures.  Has no
+    effect in --dry-run mode.  Reads confirmation from /dev/tty directly
+    so the prompt works correctly when the email is supplied on stdin.
+
 0.07	Mon Mar 30 08:45:04 EDT 2026
 
   Bug fixes
@@ -102,7 +115,7 @@ Revision history for Email-Abuse-Investigator
     form-only contacts with their form URL, paste hint, and upload hint.
 
   - Added MANUAL ACTION REQUIRED -- WEB FORM SUBMISSION block to the
-    --dry-run footer of submit_abuse_report.pl, listing form-only contacts
+    --dry-run footer of submit_abuse_report, listing form-only contacts
     separately from email recipients so the user knows which parties require
     manual browser submission.
 
@@ -144,7 +157,7 @@ Revision history for Email-Abuse-Investigator
 
   - Added form_domain field to form_contacts() hashrefs, surfaced as
     Domain/URL in report(), Domain in abuse_report_text(), and Domain in
-    the --dry-run footer of submit_abuse_report.pl.  Providers such as
+    the --dry-run footer of submit_abuse_report.  Providers such as
     MarkMonitor and GoDaddy have a dedicated "Domain or URL" field in their
     web forms; this field gives the user the exact value to paste into it
     without having to work it out from context.
@@ -171,7 +184,7 @@ Revision history for Email-Abuse-Investigator
 
   - Fixed Wide character in syswrite error when submitting reports for
     messages whose decoded subject line contains non-ASCII characters (e.g.
-    emoji).  submit_abuse_report.pl uses "use utf8" and
+    emoji).  submit_abuse_report uses "use utf8" and
     "use open qw(:std :encoding(UTF-8))", which causes all string operations
     to produce Unicode-flagged strings.  Net::SMTP->datasend() calls
     syswrite() on a raw socket and cannot handle wide characters.
@@ -253,7 +266,7 @@ Revision history for Email-Abuse-Investigator
     roles are now accumulated rather than dropped.  Each hashref in the
     returned list gains a 'roles' arrayref holding the individual role
     strings, and 'role' (singular) is set to their join(' and ', ...) for
-    backward compatibility.  The dry-run footer in submit_abuse_report.pl
+    backward compatibility.  The dry-run footer in submit_abuse_report
     now reflects this: a merged entry shows both roles on one line and the
     total line reads "N recipients (M contact routes merged)" when merging
     has occurred.
@@ -335,7 +348,7 @@ Revision history for Email-Abuse-Investigator
        domain analysis pipeline via the new dkim_domains arrayref in the
        auth results hashref.
 
-  - The --dry-run output of submit_abuse_report.pl now appends a compact
+  - The --dry-run output of submit_abuse_report now appends a compact
     recipient summary at the foot of the report:
 
         Total: 2 recipients

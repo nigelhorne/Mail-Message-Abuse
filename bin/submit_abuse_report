@@ -10,6 +10,7 @@
 # Options:
 #   --dry-run              Show what would be sent and to whom; do not
 #                          actually connect to any mail server.
+#   -i, --interactive      Prompt for confirmation before each send.
 #   --from ADDRESS         Envelope / From: address for the outgoing
 #                          reports (required unless --dry-run).
 #   --smtp HOST[:PORT]     SMTP relay to use (default: localhost:25).
@@ -50,7 +51,8 @@ use Email::Abuse::Investigator;
 # -----------------------------------------------------------------------
 # Command-line options
 # -----------------------------------------------------------------------
-my $dry_run  = 0;
+my $dry_run     = 0;
+my $interactive = 0;
 my $from     = '';
 my $smtp_arg = 'localhost:25';
 my $timeout  = 15;
@@ -60,6 +62,7 @@ my @trusted;
 
 GetOptions(
     'dry-run'    => \$dry_run,
+    'interactive|i' => \$interactive,
     'from=s'     => \$from,
     'smtp=s'     => \$smtp_arg,
     'trusted=s'  => \@trusted,
@@ -88,13 +91,13 @@ $smtp_port //= 25;
 my $raw;
 if (@ARGV) {
 	open my $fh, '<:raw', $ARGV[0] or die basename($0), ": cannot open '$ARGV[0]': $!";
-    local $/;
-    $raw = <$fh>;
-    close $fh;
+	local $/;
+	$raw = <$fh>;
+	close $fh;
 } else {
-    binmode STDIN, ':raw';
-    local $/;
-    $raw = <STDIN>;
+	binmode STDIN, ':raw';
+	local $/;
+	$raw = <STDIN>;
 }
 
 die basename($0) . ": no email data supplied.\n"
@@ -155,6 +158,27 @@ my $failed = 0;
 for my $contact (@contacts) {
     my $to   = $contact->{address};
     my $role = $contact->{role};
+
+    if ($interactive) {
+        printf "\nSend abuse report to: %s\n", $to;
+        printf "Reason             : %s\n", $role;
+        print  "Send? [y/N] ";
+        # Force a direct read from the terminal even if stdin is a file
+        my $tty;
+        if (open $tty, '<', '/dev/tty') {
+            my $ans = <$tty>;
+            close $tty;
+            chomp $ans;
+            unless (lc($ans) eq 'y') {
+                printf "Skipped: %-45s  %s\n", $to, $role;
+                next;
+            }
+        } else {
+            # /dev/tty unavailable (e.g. Windows) -- skip with a warning
+            warn "Cannot open /dev/tty for interactive prompt; skipping $to\n";
+            next;
+        }
+    }
 
     print STDERR "Sending to $to ($role)...\n" if $verbose;
 
@@ -555,6 +579,14 @@ Analyse the message and print a full description of what would be sent
 and to whom, but do not connect to any mail server or send anything.
 Useful for reviewing before committing to sending.
 
+=item B<-i>, B<--interactive>
+
+Prompt for confirmation before sending each abuse report, similar to
+C<rm -i>.  For each recipient the address and the reason for contacting
+them are displayed, followed by a C<Send? [y/N]> prompt.  Only reports
+where the user answers C<y> (case-insensitive) are sent; all others are
+skipped and counted in the summary.  Has no effect in B<--dry-run> mode.
+
 =item B<--from ADDRESS>
 
 The envelope sender and From: address for all outgoing reports.
@@ -682,6 +714,9 @@ the spam subject verbatim.
     0   All reports sent successfully (or --dry-run completed).
     1   One or more reports failed to send.
     2   Bad command-line options or missing required argument.
+
+With B<--interactive>, skipped reports (answered N) are not counted as
+failures; exit status 0 is returned if all attempted sends succeeded.
 
 =head1 DEPENDENCIES
 
