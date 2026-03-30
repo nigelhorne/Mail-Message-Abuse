@@ -58,6 +58,7 @@ my %TRUSTED_DOMAINS = map { $_ => 1 } qw(
 	gmail.com googlemail.com yahoo.com outlook.com hotmail.com
 	google.com microsoft.com apple.com amazon.com
 	googlegroups.com groups.google.com
+	w3.org
 );
 
 # Known URL shortener / redirect domains — real destination is hidden
@@ -2907,12 +2908,17 @@ sub risk_assessment {
             $self->_decode_mime_words($subj_raw) . "')");
     }
 
-    # ---- URL checks ----
+	# ---- URL checks ----
     my (%shortener_seen, %url_host_seen);
     for my $u ($self->embedded_urls()) {
-        # URL shorteners
+        # Skip trusted infrastructure domains -- W3C namespace URLs,
+        # schema references, and similar boilerplate appear in HTML email
+        # templates but are not spam indicators.
         my $bare = lc $u->{host};
         $bare =~ s/^www\.//;
+        next if $TRUSTED_DOMAINS{$bare};
+
+        # URL shorteners
         if ($URL_SHORTENERS{$bare} && !$shortener_seen{$bare}++) {
             $flag->('MEDIUM', 'url_shortener',
                 "$u->{host} is a URL shortener - the real destination is hidden");
@@ -2964,8 +2970,8 @@ sub risk_assessment {
               : $score >= 2 ? 'LOW'
               :               'INFO';
 
-    $self->{_risk} = { level => $level, score => $score, flags => \@flags };
-    return $self->{_risk};
+	$self->{_risk} = { level => $level, score => $score, flags => \@flags };
+	return $self->{_risk};
 }
 
 =head2 abuse_report_text()

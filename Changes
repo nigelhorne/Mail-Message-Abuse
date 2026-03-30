@@ -18,6 +18,27 @@ Revision history for Email-Abuse-Investigator
     "Account provider (return-path: ...@groups.outlook.com)" role and
     routing an abuse report to abuse@microsoft.com via the wrong route.
 
+  - Fixed false positive http_not_https risk flag and spurious Gandi abuse
+    contacts caused by W3C namespace and DTD URLs in HTML email templates.
+    Spam messages sent as HTML frequently contain boilerplate references such
+    as:
+      http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd
+      http://www.w3.org/1999/xhtml
+    These are injected by the ESP's HTML template engine and have no
+    connection to the spam content.  Two fixes applied:
+    1. Added w3.org to %TRUSTED_DOMAINS so it is filtered from the domain
+       intelligence pipeline and does not generate abuse contacts.
+    2. Added a trusted-domain skip at the top of the URL check loop in
+       risk_assessment() so that http:// references to trusted domains do
+       not raise the http_not_https flag.  The skip uses the same $bare
+       (www-stripped) hostname already computed for the shortener check.
+    Discovered via a Gandi autoresponse explaining that W3C receives a high
+    volume of false positive abuse reports for this reason and maintains a
+    FAQ at https://www.w3.org/Help/Webmaster#spam.
+    Note: w3c.org (the consortium's secondary domain) is deliberately not
+    added -- it rarely appears in HTML boilerplate and any w3c.org URL in a
+    spam message would be unusual enough to warrant investigation.
+
 0.06	Sun Mar 29 11:28:02 EDT 2026
 
   New features

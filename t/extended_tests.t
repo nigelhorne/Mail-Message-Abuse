@@ -2675,4 +2675,117 @@ subtest 'abuse_contacts -- non-SRS return-path still used' => sub {
 	restore_net();
 };
 
+
+# =============================================================================
+# 42. Regression: W3C URLs in HTML boilerplate do not trigger false positive
+#     risk flags (0.07)
+#     www.w3.org appears in HTML email templates as namespace/DTD references
+#     (e.g. http://www.w3.org/1999/xhtml) and must not raise http_not_https
+#     or generate abuse contacts.
+# =============================================================================
+
+subtest 'risk_assessment -- w3.org http URL does not raise http_not_https' => sub {
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(make_email(
+		to   => '<victim@nigelhorne.com>',
+		body => 'Visit https://spamsite.example/offer',
+		ct   => 'text/html',
+		# Simulate an HTML body containing a W3C namespace reference
+	));
+	# Parse with a body that includes a W3C DTD reference
+	$a->parse_email(join("\n",
+		'Received: from ext (ext [198.51.100.1]) by mx.nigelhorne.com with ESMTP',
+		'From: Spammer <spam@spammer.example>',
+		'To: <victim@nigelhorne.com>',
+		'Subject: Test',
+		'Date: ' . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime),
+		'Message-ID: <w3test@test>',
+		'Content-Type: text/html; charset=us-ascii',
+		'',
+		'<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"',
+		'  "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">',
+		'<html xmlns="http://www.w3.org/1999/xhtml">',
+		'<body><a href="https://spamsite.example/offer">Buy now</a></body>',
+		'</html>',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my $risk  = $a->risk_assessment();
+		my @flags = @{ $risk->{flags} };
+		my @w3_http = grep {
+			$_->{flag} eq 'http_not_https' && $_->{detail} =~ /w3\.org/i
+		} @flags;
+		is scalar(@w3_http), 0,
+			'http_not_https not raised for www.w3.org DTD/namespace reference';
+	}
+	restore_net();
+};
+
+subtest 'risk_assessment -- http_not_https still raised for non-trusted http URLs' => sub {
+	# Guard: the W3C skip must not suppress legitimate http_not_https flags
+	# for actual spam landing page URLs.
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(join("\n",
+		'Received: from ext (ext [198.51.100.1]) by mx.nigelhorne.com with ESMTP',
+		'From: Spammer <spam@spammer.example>',
+		'To: <victim@nigelhorne.com>',
+		'Subject: Test',
+		'Date: ' . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime),
+		'Message-ID: <httptest@test>',
+		'Content-Type: text/plain',
+		'',
+		'Visit http://spamsite.example/offer for details',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my $risk  = $a->risk_assessment();
+		my @flags = @{ $risk->{flags} };
+		my @http  = grep { $_->{flag} eq 'http_not_https' } @flags;
+		ok scalar(@http) > 0,
+			'http_not_https still raised for non-trusted plain-HTTP spam URL';
+	}
+	restore_net();
+};
+
+subtest 'abuse_contacts -- w3.org URL does not generate abuse contact' => sub {
+	null_net();
+	my $a = new_ok('Email::Abuse::Investigator');
+	$a->parse_email(join("\n",
+		'Received: from ext (ext [198.51.100.1]) by mx.nigelhorne.com with ESMTP',
+		'From: Spammer <spam@spammer.example>',
+		'To: <victim@nigelhorne.com>',
+		'Subject: Test',
+		'Date: ' . POSIX::strftime('%a, %d %b %Y %H:%M:%S +0000', gmtime),
+		'Message-ID: <w3contact@test>',
+		'Content-Type: text/html; charset=us-ascii',
+		'',
+		'<html xmlns="http://www.w3.org/1999/xhtml">',
+		'<body><a href="https://spamsite.example/offer">Buy now</a></body>',
+		'</html>',
+	));
+	{
+		no warnings 'redefine';
+		local *Email::Abuse::Investigator::_resolve_host = sub { undef };
+		local *Email::Abuse::Investigator::_whois_ip     = sub { {} };
+		local *Email::Abuse::Investigator::_domain_whois = sub { undef };
+
+		my @contacts  = $a->abuse_contacts();
+		my @addresses = map { $_->{address} } @contacts;
+		my @w3_contacts = grep { /w3\.org/i } @addresses;
+		is scalar(@w3_contacts), 0,
+			'no abuse contact generated for w3.org URL in HTML boilerplate';
+	}
+	restore_net();
+};
+
 done_testing();
