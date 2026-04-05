@@ -4,7 +4,7 @@ Revision history for Email-Abuse-Investigator
 
   New features
 
-  - Added -i / --interactive flag to submit_abuse_report.pl, modelled on
+  - Added -i / --interactive flag to submit_abuse_report, modelled on
     rm -i.  When set, the script prompts for confirmation before sending
     each abuse report.  The recipient address and the reason for contacting
     them (the role string) are displayed, followed by a "Send? [y/N]"
@@ -16,7 +16,7 @@ Revision history for Email-Abuse-Investigator
     without a pseudo-terminal.
 
   - Added t/submit_script.t: a new black-box test suite for
-    submit_abuse_report.pl that runs the script as a subprocess via
+    submit_abuse_report that runs the script as a subprocess via
     IPC::Open3.  Covers --dry-run output, --interactive with --dry-run
     (no prompt shown), the no-contacts unresolved domain listing, spoofed
     From: domain exclusion from the unresolved list, and --help
@@ -42,10 +42,10 @@ Revision history for Email-Abuse-Investigator
     sending header (From:, Return-Path:, Sender:) are excluded, as are
     domains already covered by abuse_contacts() or form_contacts().
     Each hashref contains domain, type (url_host or domain), and source.
-    submit_abuse_report.pl now delegates its _print_unresolved() helper
+    submit_abuse_report now delegates its _print_unresolved() helper
     to this method rather than reimplementing the filtering logic inline.
 
-  - Added unresolved domain listing to submit_abuse_report.pl.  When the
+  - Added unresolved domain listing to submit_abuse_report.  When the
     analysis finds domains or URL hosts in the message but cannot determine
     an abuse contact for them, they are now listed so the user knows where
     to look for manual follow-up.  The list appears in three places: after
@@ -59,6 +59,15 @@ Revision history for Email-Abuse-Investigator
     contained mailto:gyomu@tolde.co.jp and http://www.toolde.co.jp in the
     body -- both genuine spam contact points that previously produced no
     output at all.
+
+  - Added --bcc [ADDRESS] option to submit_abuse_report.  When given,
+    a blind carbon copy of every outgoing report is sent to ADDRESS.  If
+    ADDRESS is omitted, the copy goes to the --from address, which is the
+    common case for keeping a personal record of what was sent.  The BCC
+    is implemented as a second SMTP RCPT TO envelope recipient with no
+    Bcc: header in the message, so the primary abuse contact never sees
+    the monitoring address.  In --dry-run mode the BCC address is shown
+    in the output header but no mail is sent.
 
 0.07	Mon Mar 30 08:45:04 EDT 2026
 
