@@ -1,11 +1,11 @@
 #!/usr/bin/env perl
 # -----------------------------------------------------------------------
-# submit_abuse_report -- analyse a spam/phishing email and send abuse
+# submit_abuse_report.pl -- analyse a spam/phishing email and send abuse
 #                           reports to all relevant parties.
 #
 # Usage:
-#   submit_abuse_report [options] spam.eml
-#   submit_abuse_report [options] < spam.eml
+#   submit_abuse_report.pl [options] spam.eml
+#   submit_abuse_report.pl [options] < spam.eml
 #
 # Options:
 #   --dry-run              Show what would be sent and to whom; do not
@@ -24,13 +24,13 @@
 #
 # Examples:
 #   # Dry run -- see what would be sent without sending anything
-#   submit_abuse_report --dry-run spam.eml
+#   submit_abuse_report.pl --dry-run spam.eml
 #
 #   # Send reports via the local MTA
-#   submit_abuse_report --from postmaster@myisp.example spam.eml
+#   submit_abuse_report.pl --from postmaster@myisp.example spam.eml
 #
 #   # Send via a specific SMTP relay, skipping our own outbound IP
-#   submit_abuse_report \
+#   submit_abuse_report.pl \
 #       --from abuse-reporter@example.com \
 #       --smtp mail.example.com:587 \
 #       --trusted 203.0.113.0/24 \
@@ -45,6 +45,7 @@ use open qw(:std :encoding(UTF-8));
 use Getopt::Long qw(GetOptions);
 use Pod::Usage   qw(pod2usage);
 use Net::SMTP;
+use MIME::Base64 qw(encode_base64);
 use POSIX        qw(strftime);
 use File::Basename qw(basename);
 use lib '.';     # find Email/Abuse/Investigator.pm in development tree
@@ -108,20 +109,18 @@ $smtp_port //= 25;
 # Read the raw email
 # -----------------------------------------------------------------------
 my $raw;
-if (@ARGV && -f $ARGV[0]) {
-    open my $fh, '<:raw', $ARGV[0]
-        or die basename($0) . ": cannot open '$ARGV[0]': $!\n";
-    local $/;
-    $raw = <$fh>;
-    close $fh;
+if (@ARGV) {
+	open my $fh, '<:raw', $ARGV[0] or die basename($0), ": cannot open '$ARGV[0]': $!";
+	local $/;
+	$raw = <$fh>;
+	close $fh;
 } else {
-    binmode STDIN, ':raw';
-    local $/;
-    $raw = <STDIN>;
+	binmode STDIN, ':raw';
+	local $/;
+	$raw = <STDIN>;
 }
 
-die basename($0) . ": no email data supplied.\n"
-    unless defined $raw && length $raw;
+die basename($0), ': no email data supplied.' unless defined $raw && length $raw;
 
 # -----------------------------------------------------------------------
 # Analyse
@@ -405,12 +404,22 @@ sub _send_report {
         date     => $date,
         from     => $a{from},
         to       => $a{to},
+        bcc      => $a{bcc},
         subject  => $a{subject},
         msg_id   => $msg_id,
         body     => $a{body},
         original => $a{original},
         inv      => $a{inv},
     );
+
+    # Debug: if SUBMIT_ABUSE_DUMP_MIME is set, write the raw MIME to a file
+    if (my $dump = $ENV{SUBMIT_ABUSE_DUMP_MIME}) {
+        if (open my $fh, '>', $dump) {
+            print $fh $mail;
+            close $fh;
+            warn "MIME message written to $dump\n";
+        }
+    }
 
     my $smtp = eval {
         Net::SMTP->new(
@@ -548,13 +557,10 @@ sub _build_mime_message {
     # cannot handle Perl strings with the Unicode flag set (wide characters).
     # The body may contain non-ASCII characters (e.g. emoji in decoded subject
     # lines) so we must encode explicitly rather than rely on the socket layer.
-    require Encode;
     (my $body_crlf     = $a{body}) =~ s/\r?\n/\r\n/g;
-    $body_crlf = Encode::encode('UTF-8', $body_crlf);
     my $original_crlf  = '';
     if (defined $a{original} && length ${ $a{original} }) {
         ($original_crlf = ${ $a{original} }) =~ s/\r?\n/\r\n/g;
-        $original_crlf = Encode::encode('UTF-8', $original_crlf);
     }
     my $feedback_report = _build_feedback_report($a{inv});
 
@@ -570,7 +576,8 @@ sub _build_mime_message {
     push @msg, "Content-Type: multipart/report;";
     push @msg, "    report-type=feedback-report;";
     push @msg, "    boundary=\"$boundary\"";
-    push @msg, "X-Mailer: Email::Abuse::Investigator submit_abuse_report";
+    push @msg, "X-Mailer: Email::Abuse::Investigator submit_abuse_report.pl";
+    push @msg, "X-Report-Monitor: $a{bcc}" if $a{bcc};
     push @msg, "";
 
     # Preamble for non-MIME clients
@@ -594,19 +601,26 @@ sub _build_mime_message {
     push @msg, $feedback_report;
 
     # ---- Part 3: original spam message (RFC 5965 s.2 "third part") ----
+    # Use base64 encoding so Outlook and other clients reliably show
+    # it as a downloadable .eml attachment rather than rendering it
+    # inline or discarding it.
+    my $original_b64 = MIME::Base64::encode_base64($original_crlf, "\r\n");
     push @msg, "--$boundary";
     push @msg, "Content-Type: message/rfc822";
+    push @msg, "Content-Transfer-Encoding: base64";
     push @msg, "Content-Disposition: attachment;";
     push @msg, "    filename=\"original_message.eml\"";
     push @msg, "Content-Description: Original spam/phishing message";
     push @msg, "";
-    push @msg, $original_crlf;
+    push @msg, $original_b64;
 
     # Closing boundary
     push @msg, "--${boundary}--";
     push @msg, "";
 
-    return join("\r\n", @msg);
+    require Encode;
+    my $result = join("\r\n", @msg);
+    return Encode::encode('UTF-8', $result);
 }
 
 # -----------------------------------------------------------------------
@@ -628,13 +642,13 @@ __END__
 
 =head1 NAME
 
-submit_abuse_report -- analyse a spam/phishing email and send abuse
+submit_abuse_report.pl -- analyse a spam/phishing email and send abuse
 reports to all relevant parties
 
 =head1 SYNOPSIS
 
-    submit_abuse_report [options] spam.eml
-    submit_abuse_report [options] < spam.eml
+    submit_abuse_report.pl [options] spam.eml
+    submit_abuse_report.pl [options] < spam.eml
 
 =head1 OPTIONS
 
