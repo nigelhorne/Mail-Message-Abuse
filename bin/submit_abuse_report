@@ -11,8 +11,8 @@
 #   --dry-run              Show what would be sent and to whom; do not
 #                          actually connect to any mail server.
 #   -i, --interactive      Prompt for confirmation before each send.
-#   --bcc [ADDRESS]        Send a copy to ADDRESS (or to --from if no
-#                          address given) for monitoring purposes.
+#   --bcc                  Send a copy to the --from address for monitoring.
+#   --bcc-to ADDRESS       Send a copy to an explicit address.
 #   --from ADDRESS         Envelope / From: address for the outgoing
 #                          reports (required unless --dry-run).
 #   --smtp HOST[:PORT]     SMTP relay to use (default: localhost:25).
@@ -55,7 +55,8 @@ use Email::Abuse::Investigator;
 # -----------------------------------------------------------------------
 my $dry_run     = 0;
 my $interactive = 0;
-my $bcc      = undef;  # undef = disabled; '' = copy to --from; else explicit address
+my $bcc      = 0;      # --bcc flag: copy to --from address
+my $bcc_to   = '';     # --bcc-to ADDRESS: copy to explicit address
 my $from     = '';
 my $smtp_arg = 'localhost:25';
 my $timeout  = 15;
@@ -66,7 +67,8 @@ my @trusted;
 GetOptions(
     'dry-run'    => \$dry_run,
     'interactive|i' => \$interactive,
-    'bcc:s'      => \$bcc,
+    'bcc'        => \$bcc,
+    'bcc-to=s'   => \$bcc_to,
     'from=s'     => \$from,
     'smtp=s'     => \$smtp_arg,
     'trusted=s'  => \@trusted,
@@ -88,17 +90,17 @@ if ($from && $from !~ /\@/) {
 
 my ($smtp_host, $smtp_port) = split /:/, $smtp_arg, 2;
 
-# Resolve BCC address: --bcc with no value copies to --from; --bcc addr
-# uses the explicit address.  undef means BCC is disabled.
+# Resolve BCC address.
+# --bcc alone copies to --from; --bcc-to ADDRESS uses an explicit address.
 my $bcc_addr = undef;
-if (defined $bcc) {
-    if ($bcc =~ /\@/) {
-        $bcc_addr = $bcc;
-    } elsif ($from) {
-        $bcc_addr = $from;
-    } else {
-        die basename($0) . ": --bcc requires --from or an explicit address.\n";
-    }
+if ($bcc_to) {
+    die basename($0) . ": --bcc-to value '$bcc_to' does not look like an email address.\n"
+        unless $bcc_to =~ /\@/;
+    $bcc_addr = $bcc_to;
+} elsif ($bcc) {
+    die basename($0) . ": --bcc requires --from to be set.\n"
+        unless $from;
+    $bcc_addr = $from;
 }
 $smtp_port //= 25;
 
@@ -652,11 +654,16 @@ them are displayed, followed by a C<Send? [y/N]> prompt.  Only reports
 where the user answers C<y> (case-insensitive) are sent; all others are
 skipped and counted in the summary.  Has no effect in B<--dry-run> mode.
 
-=item B<--bcc> [ADDRESS]
+=item B<--bcc>
 
-Send a blind carbon copy of every report to ADDRESS.  If ADDRESS is
-omitted, the copy is sent to the B<--from> address, which is the most
-common use case for monitoring what was sent.  The BCC recipient receives
+Send a blind carbon copy of every report to the B<--from> address.
+The most common use case: keep a personal record of every report sent
+without specifying a separate address.
+
+=item B<--bcc-to ADDRESS>
+
+Send a blind carbon copy of every report to ADDRESS.  Use this when the
+monitoring address differs from B<--from>.  The BCC recipient receives
 the same ARF-compliant message as the primary abuse contact but their
 address is not visible to the recipient (it is added as a separate SMTP
 C<RCPT TO> envelope recipient without a C<Bcc:> header in the message).
