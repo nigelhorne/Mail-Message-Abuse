@@ -989,9 +989,10 @@ for the unknown case: C<$orig-E<gt>{abuse} eq '(unknown)'>.
 =cut
 
 sub originating_ip {
-    my ($self) = @_;
-    $self->{_origin} //= $self->_find_origin();
-    return $self->{_origin};
+	my $self = $_[0];
+
+	$self->{_origin} //= $self->_find_origin();
+	return $self->{_origin};
 }
 
 =head2 embedded_urls()
@@ -1254,9 +1255,10 @@ position it was first seen).
 =cut
 
 sub embedded_urls {
-    my ($self) = @_;
-    $self->{_urls} //= $self->_extract_and_resolve_urls();
-    return @{ $self->{_urls} };
+	my $self = $_[0];
+
+	$self->{_urls} //= $self->_extract_and_resolve_urls();
+	return @{ $self->{_urls} };
 }
 
 =head2 mailto_domains()
@@ -5740,8 +5742,15 @@ less than 180 days ago with C<recently_registered =E<gt> 1>.
 
 =head1 SEE ALSO
 
-L<Net::DNS>, L<LWP::UserAgent>, L<HTML::LinkExtor>, L<MIME::QuotedPrint>,
-L<ARIN RDAP|https://rdap.arin.net/>
+=over 4
+
+=item * L<ARIN RDAP|https://rdap.arin.net/>
+
+=item * L<Test Dashboard|https://nigelhorne.github.io/CGI-Info/coverage/>
+
+=item * L<Net::DNS>, L<LWP::UserAgent>, L<HTML::LinkExtor>, L<MIME::QuotedPrint>,
+
+=back
 
 =head1 REPOSITORY
 

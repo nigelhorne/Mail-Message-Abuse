@@ -4,6 +4,10 @@ Revision history for Email-Abuse-Investigator
 
   New features
 
+  - Added test dashboard at https://nigelhorne.github.io/Email-Abuse-Investigator/coverage/
+
+  - Added fuzz testing
+
   - Added -i / --interactive flag to submit_abuse_report, modelled on
     rm -i.  When set, the script prompts for confirmation before sending
     each abuse report.  The recipient address and the reason for contacting

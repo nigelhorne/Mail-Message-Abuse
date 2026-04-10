@@ -1290,6 +1290,28 @@ called afterwards to retrieve their full detail.
 
     # Empty list when the message contains no URLs and no contact domains.
 
+## unresolved\_contacts()
+
+### Purpose
+
+Returns a list of domains and URL hosts found in the message for which
+no abuse contact could be determined -- i.e. they are not in
+`%PROVIDER_ABUSE` and produced no usable result from IP WHOIS or
+domain WHOIS.  Domains whose only source is a spoofable sending header
+(`From:`, `Return-Path:`, `Sender:`) are excluded, as are domains
+already covered by `abuse_contacts()` or `form_contacts()`.
+
+This is useful for surfacing parties that may warrant manual
+investigation when the automated pipeline cannot find a contact.
+
+### Returns
+
+A list of hashrefs, each with:
+
+- `domain` (string) -- the domain or hostname
+- `type` (string) -- `'url_host'` or `'domain'`
+- `source` (string) -- where it was found (e.g. `'email address / mailto in body'`)
+
 ## sending\_software()
 
 Returns information extracted from headers that identify the software or
@@ -2773,8 +2795,9 @@ less than 180 days ago with `recently_registered => 1`.
 
 # SEE ALSO
 
-[Net::DNS](https://metacpan.org/pod/Net%3A%3ADNS), [LWP::UserAgent](https://metacpan.org/pod/LWP%3A%3AUserAgent), [HTML::LinkExtor](https://metacpan.org/pod/HTML%3A%3ALinkExtor), [MIME::QuotedPrint](https://metacpan.org/pod/MIME%3A%3AQuotedPrint),
-[ARIN RDAP](https://rdap.arin.net/)
+- [ARIN RDAP](https://rdap.arin.net/)
+- [Test Dashboard](https://nigelhorne.github.io/CGI-Info/coverage/)
+- [Net::DNS](https://metacpan.org/pod/Net%3A%3ADNS), [LWP::UserAgent](https://metacpan.org/pod/LWP%3A%3AUserAgent), [HTML::LinkExtor](https://metacpan.org/pod/HTML%3A%3ALinkExtor), [MIME::QuotedPrint](https://metacpan.org/pod/MIME%3A%3AQuotedPrint),
 
 # REPOSITORY
 
