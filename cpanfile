@@ -24,6 +24,7 @@ on 'test' => sub {
 	requires 'Test::DescribeMe';
 	requires 'Test::Most';
 	requires 'Test::Needs';
+	requires 'Test::Which';
 };
 
 on 'develop' => sub {
