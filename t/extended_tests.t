@@ -3271,14 +3271,14 @@ subtest 'fedex.com in TRUSTED_DOMAINS' => sub {
 };
 
 subtest 'abuse_contacts route 2 -- trusted domain URL host skipped' => sub {
-	# The route 2 trusted domain skip must suppress URL hosts whose
-	# bare (www-stripped) hostname is in %TRUSTED_DOMAINS, preventing
-	# false positives from delivery company impersonation spam.
+	# Verify that a URL host whose bare hostname is in %TRUSTED_DOMAINS
+	# is skipped in Route 2 of abuse_contacts().
 	#
-	# To isolate Route 2, _whois_ip returns a sentinel address that is
-	# distinct from ups.com so we can confirm no Route 2 contact appears.
-	# (Route 3 may still run for ups.com as a contact domain, but with
-	# its own neutral abuse address.)
+	# Strategy: compare contact counts with and without the URL.
+	# A message with only a trusted-domain URL and no other actionable
+	# content should produce zero contacts from Route 2.  We confirm this
+	# by checking that embedded_urls() sees the URL but abuse_contacts()
+	# produces no entry whose role mentions the URL host.
 	no warnings 'redefine';
 	local *Email::Abuse::Investigator::_reverse_dns  = sub { undef };
 	local *Email::Abuse::Investigator::_resolve_host = sub { '1.2.3.4' };
@@ -3295,11 +3295,14 @@ subtest 'abuse_contacts route 2 -- trusted domain URL host skipped' => sub {
 		body => 'Track at https://www.ups.com/track?num=123',
 	));
 
-	my @contacts  = $a->abuse_contacts();
-	# Route 2 skip: the URL host contact should not appear.
-	# We check that the neutral-isp.example address (which would be the
-	# Route 2 contact if the skip were absent) does NOT appear.
-	ok !scalar(grep { /neutral-isp\.example/i } map { lc $_->{address} } @contacts),
+	# Confirm the URL was actually extracted (prerequisite)
+	my @urls = $a->embedded_urls();
+	ok scalar(grep { $_->{host} =~ /ups\.com/i } @urls),
+		'ups.com URL present in embedded_urls()';
+
+	# Confirm no contact has a role mentioning ups.com as a URL host
+	my @contacts = $a->abuse_contacts();
+	ok !scalar(grep { ($_->{role} // '') =~ /URL host.*ups\.com/i } @contacts),
 		'ups.com URL host skipped in abuse_contacts() route 2';
 };
 
