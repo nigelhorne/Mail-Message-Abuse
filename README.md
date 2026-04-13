@@ -2796,7 +2796,7 @@ less than 180 days ago with `recently_registered => 1`.
 # SEE ALSO
 
 - [ARIN RDAP](https://rdap.arin.net/)
-- [Test Dashboard](https://nigelhorne.github.io/CGI-Info/coverage/)
+- [Test Dashboard](https://nigelhorne.github.io/Email-Abuse-Investigator/coverage/)
 - [Net::DNS](https://metacpan.org/pod/Net%3A%3ADNS), [LWP::UserAgent](https://metacpan.org/pod/LWP%3A%3AUserAgent), [HTML::LinkExtor](https://metacpan.org/pod/HTML%3A%3ALinkExtor), [MIME::QuotedPrint](https://metacpan.org/pod/MIME%3A%3AQuotedPrint),
 
 # REPOSITORY

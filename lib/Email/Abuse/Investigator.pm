@@ -5758,7 +5758,7 @@ less than 180 days ago with C<recently_registered =E<gt> 1>.
 
 =item * L<ARIN RDAP|https://rdap.arin.net/>
 
-=item * L<Test Dashboard|https://nigelhorne.github.io/CGI-Info/coverage/>
+=item * L<Test Dashboard|https://nigelhorne.github.io/Email-Abuse-Investigator/coverage/>
 
 =item * L<Net::DNS>, L<LWP::UserAgent>, L<HTML::LinkExtor>, L<MIME::QuotedPrint>,
 
