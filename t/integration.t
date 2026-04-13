@@ -539,12 +539,14 @@ subtest 'Scenario 6: mailto-only spam — no HTTP URLs, all contact via email' =
         domain_whois => sub {
             my (undef, $dom) = @_;
             return undef unless $dom eq 'sminvestmentsupplychain.example';
-            return <<'WHOIS';
-Registrar: NameCheap Inc.
-Registrar Abuse Contact Email: abuse@namecheap.com
-Creation Date: 2025-10-15
-Registry Expiry Date: 2026-10-15
-WHOIS
+            # Dynamic dates so recently_registered is always true
+            use POSIX qw(strftime);
+            my $reg = strftime('%Y-%m-%d', gmtime(time() - 60  * 86400));
+            my $exp = strftime('%Y-%m-%d', gmtime(time() + 305 * 86400));
+            return "Registrar: NameCheap Inc.\n"
+                 . "Registrar Abuse Contact Email: abuse\@namecheap.com\n"
+                 . "Creation Date: $reg\n"
+                 . "Registry Expiry Date: $exp\n";
         },
     );
 
