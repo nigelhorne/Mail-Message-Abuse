@@ -165,12 +165,14 @@ subtest 'Scenario 1: direct-to-MX spam — full pipeline' => sub {
         domain_whois => sub {
             my (undef, $dom) = @_;
             return undef unless $dom eq 'spamsite.example';
-            return <<'WHOIS';
-Registrar: Dodgy Registrar Inc
-Registrar Abuse Contact Email: abuse@dodgy-reg.example
-Creation Date: 2025-11-01
-Registry Expiry Date: 2026-11-01
-WHOIS
+            # Dynamic dates so recently_registered is always true
+            use POSIX qw(strftime);
+            my $reg = strftime('%Y-%m-%d', gmtime(time() - 60  * 86400));
+            my $exp = strftime('%Y-%m-%d', gmtime(time() + 305 * 86400));
+            return "Registrar: Dodgy Registrar Inc\n"
+                 . "Registrar Abuse Contact Email: abuse\@dodgy-reg.example\n"
+                 . "Creation Date: $reg\n"
+                 . "Registry Expiry Date: $exp\n";
         },
     );
 
