@@ -493,6 +493,7 @@ sub new {
 				'min' => 0
 			}, trusted_relays => {
 				'type' => 'arrayref',
+				'element_type' => 'string',
 				'optional' => 1,
 			}, verbose => {
 				'type' => 'boolean',
