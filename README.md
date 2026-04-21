@@ -2837,11 +2837,6 @@ You can also look for information at:
 
 Copyright 2026 Nigel Horne.
 
-Usage is subject to licence terms.
-
-The licence terms of this software are as follows:
-
-- Personal single user, single computer use: GPL2
-- All other users (including Commercial, Charity, Educational, Government)
-  must apply in writing for a licence for use from Nigel Horne at the
-  above e-mail.
+Usage is subject to GPL2 licence terms.
+If you use it,
+please let me know.

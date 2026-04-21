@@ -15,13 +15,14 @@ use Socket qw( inet_aton inet_ntoa );
 
 # Optional - gracefully degraded
 my $HAS_NET_DNS;
-BEGIN { $HAS_NET_DNS = eval { require Net::DNS; 1 } }
-
 my $HAS_LWP;
-BEGIN { $HAS_LWP = eval { require LWP::UserAgent; 1 } }
-
 my $HAS_HTML_LINKEXTOR;
-BEGIN { $HAS_HTML_LINKEXTOR = eval { require HTML::LinkExtor; 1 } }
+
+BEGIN {
+	$HAS_NET_DNS = eval { require Net::DNS; 1 };
+	$HAS_LWP = eval { require LWP::UserAgent; 1 };
+	$HAS_HTML_LINKEXTOR = eval { require HTML::LinkExtor; 1 };
+}
 
 # -----------------------------------------------------------------------
 # Constants
@@ -5807,19 +5808,9 @@ L<http://deps.cpantesters.org/?module=Email::Abuse::Investigator>
 
 Copyright 2026 Nigel Horne.
 
-Usage is subject to licence terms.
-
-The licence terms of this software are as follows:
-
-=over 4
-
-=item * Personal single user, single computer use: GPL2
-
-=item * All other users (including Commercial, Charity, Educational, Government)
-  must apply in writing for a licence for use from Nigel Horne at the
-  above e-mail.
-
-=back
+Usage is subject to GPL2 licence terms.
+If you use it,
+please let me know.
 
 =cut
 
